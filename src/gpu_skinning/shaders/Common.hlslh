@@ -1,0 +1,7 @@
+struct VS_SurfaceOutput
+{
+    float4 pos : SV_POSITION;
+    float4 normal : NORMAL;
+    float2 texcoords : TEXCOORD0;
+    float4 worldPos : TEXCOORD1;
+};
