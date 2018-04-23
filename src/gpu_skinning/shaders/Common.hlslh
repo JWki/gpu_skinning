@@ -5,3 +5,5 @@ struct VS_SurfaceOutput
     float2 texcoords : TEXCOORD0;
     float4 worldPos : TEXCOORD1;
 };
+
+#define MAX_NUM_BONES 128

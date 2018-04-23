@@ -158,25 +158,6 @@ bool CreateMesh(ID3D11Device* device, MeshDesc* desc, Mesh* mesh)
 }
 ///
 
-struct ObjectConstantData
-{
-    float transform[16];
-};
-
-struct FrameConstantData
-{
-    float camera[16];
-    float projection[16];
-    float cameraProjection[16];
-};
-
-struct SkeletonConstantData
-{
-    float boneTransform[64][16];
-};
-///
-
-
 ///
 static void* Win32LoadFileContents(const char* path, uint32_t* outFileSize)
 {
@@ -204,23 +185,6 @@ static void* Win32LoadFileContents(const char* path, uint32_t* outFileSize)
 }
 
 ///
-struct AppData
-{   
-    ShaderDesc shaderDesc;
-
-    Mesh    testMesh;
-    Shader  shader;
-
-    ID3D11Buffer* frameConstantBuffer;
-    ID3D11Buffer* objectConstantBuffer;
-    ID3D11Buffer* skeletonConstantBuffer;
-
-    
-} g_data;
-
-
-
-///
 struct ByteStream
 {
     char*   buffer = nullptr;
@@ -245,6 +209,187 @@ struct ByteStream
         return numBytes;
     }
 };
+
+///
+struct ObjectConstantData
+{
+    float transform[16];
+};
+
+struct FrameConstantData
+{
+    float camera[16];
+    float projection[16];
+    float cameraProjection[16];
+};
+
+#define MAX_NUM_BONES 128
+
+struct SkeletonConstantData
+{
+    float boneTransform[MAX_NUM_BONES][16];
+};
+///
+struct Joint
+{
+    float   globalTransform[16];
+    float   localTransform[16];
+    int     importId;   // @HACK
+    int     parent;
+};
+
+struct Skeleton
+{
+    float invBindpose[MAX_NUM_BONES][16];
+    const char* nameTable[MAX_NUM_BONES];      // contains human readable names of joints
+    Joint joints[MAX_NUM_BONES];               // actual joints
+    uint32_t numJoints;
+};
+
+void TransferNode(Skeleton* source, Skeleton* target, uint32_t& writeOffset, int nodeIdx)
+{
+    if (source->joints[nodeIdx].importId == -1) {
+        return;
+    }
+    target->joints[writeOffset] = source->joints[nodeIdx];
+    target->nameTable[writeOffset] = source->nameTable[nodeIdx];
+    memcpy(target->invBindpose[writeOffset], source->invBindpose[nodeIdx], sizeof(float) * 16);
+    writeOffset++;
+    if (source->joints[nodeIdx].parent != -1) {
+        TransferNode(source, target, writeOffset, source->joints[nodeIdx].parent);
+    }
+    source->joints[nodeIdx].importId = -1;
+}
+
+void SortSkeleton(Skeleton* source, Skeleton* target)
+{
+    uint32_t writeOffset = 0;
+    uint32_t readOffset = 0;
+    while (readOffset < MAX_NUM_BONES && readOffset < source->numJoints) {
+        TransferNode(source, target, writeOffset, readOffset);
+        readOffset++;
+    }
+}
+
+bool ImportSGA(const char* path, Skeleton* outSkeleton)
+{
+    uint32_t fileSize;
+    ByteStream stream;
+    stream.buffer = (char*)Win32LoadFileContents(path, &fileSize);
+    stream.bufferSize = (size_t)(fileSize);
+    stream.offset = 0;
+
+    auto magicNumber = stream.Read<uint32_t>();
+    assert(magicNumber == 383405658);
+
+    auto version = stream.Read<uint8_t>();
+    assert(version == 1);
+
+    auto nameLen = stream.Read<uint16_t>();
+    stream.ReadBytes(nullptr, nameLen);   // skip the name
+
+    outSkeleton->numJoints = (uint32_t)stream.Read<uint16_t>(); 
+    
+    Skeleton tempSkeleton;
+    tempSkeleton.numJoints = outSkeleton->numJoints;
+    assert(outSkeleton->numJoints <= MAX_NUM_BONES);
+    char* buf = new char[MAX_NUM_BONES * 512];
+    memset(buf, 0x0, MAX_NUM_BONES * 512);
+    uint32_t bufOffset = 0;
+    int tempParentIndexTable[MAX_NUM_BONES];
+    for (auto i = 0; i < MAX_NUM_BONES; ++i) { tempParentIndexTable[i] = -1; }
+
+    for (uint32_t i = 0; i < outSkeleton->numJoints; ++i) {
+        // read the bone name and store it
+        auto nameLen = stream.Read<uint16_t>();
+        assert(nameLen < 512);
+        stream.ReadBytes(buf + bufOffset, nameLen);
+        tempSkeleton.nameTable[i] = buf + bufOffset;
+        bufOffset += nameLen;
+        // read the bind pose
+        auto& joint = tempSkeleton.joints[i];   
+        auto pos = stream.Read<math::Vec3>();
+        math::Make4x4FloatTranslationMatrixCM(tempSkeleton.invBindpose[i], pos);
+        auto isParent = stream.Read<uint8_t>() == 1;
+        if (isParent) {
+            joint.parent = -1;
+        }
+        else {
+            joint.parent = 0;
+        }
+        joint.importId = i;
+        auto numChildren = stream.Read<uint16_t>();
+        uint16_t children[MAX_NUM_BONES];
+        assert(numChildren <= MAX_NUM_BONES);
+        stream.ReadBytes(children, sizeof(uint16_t) * numChildren);
+        for(uint16_t c = 0; c < numChildren; ++c) {
+            tempParentIndexTable[children[c]] = i;
+        }
+    }
+    for (uint16_t i = 0; i < tempSkeleton.numJoints; ++i) {
+        tempSkeleton.joints[i].parent = tempParentIndexTable[i];
+    }
+    SortSkeleton(&tempSkeleton, outSkeleton);
+    outSkeleton->numJoints = tempSkeleton.numJoints;
+    for (int i = 0; i < (int)outSkeleton->numJoints; ++i) {
+        assert(outSkeleton->joints[i].parent < i);
+    }
+
+    return true;
+}
+///
+int GetBoneWithName(Skeleton* skeleton, const char* name)
+{
+    for (uint32_t i = 0; i < skeleton->numJoints && i < MAX_NUM_BONES; ++i) {
+        if (strcmp(skeleton->nameTable[i], name) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+void ResetLocalTransforms(Skeleton* skeleton)
+{
+    for (uint32_t i = 0; i < skeleton->numJoints; ++i) {
+        math::Make4x4FloatMatrixIdentity(skeleton->joints[i].localTransform);
+    }
+}
+
+void ComputePose(Skeleton* skeleton, SkeletonConstantData* outBuffer)
+{
+    // @NOTE we assume that the skeleton is sorted so parents are always evaluated before their children
+    // and also local transforms have been reset at least once so there's no BS in them
+    for (uint32_t i = 0; i < skeleton->numJoints; ++i) {
+        if (skeleton->joints[i].parent != -1) {
+            auto& parent = skeleton->joints[skeleton->joints[i].parent];
+            float temp[16];
+            math::Copy4x4FloatMatrixCM(skeleton->joints[i].localTransform, temp);
+            math::MultiplyMatricesCM(temp, parent.globalTransform, skeleton->joints[i].globalTransform);
+        }
+        else {
+            math::Copy4x4FloatMatrixCM(skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
+        }
+        math::Copy4x4FloatMatrixCM(skeleton->joints[i].globalTransform, outBuffer->boneTransform[i]);
+    }
+    //
+}
+
+///
+struct AppData
+{   
+    ShaderDesc shaderDesc;
+
+    Skeleton    testSkeleton;
+    Mesh        testMesh;
+    Shader      shader;
+
+    ID3D11Buffer* frameConstantBuffer;
+    ID3D11Buffer* objectConstantBuffer;
+    ID3D11Buffer* skeletonConstantBuffer;
+
+} g_data;
+
+
 
 bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 {
@@ -511,6 +656,13 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     }
     printf("Created test mesh\n");
 
+    if (!ImportSGA("assets/character.sga", &g_data.testSkeleton)) {
+        printf("failed to load test skeleton from %s\n", "assets/character.sga");
+        return;
+    }
+    ResetLocalTransforms(&g_data.testSkeleton);
+    printf("Created test skeleton\n");
+
     {   ///
         {   // frame constant data
             D3D11_BUFFER_DESC desc;
@@ -595,15 +747,19 @@ void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         static ObjectConstantData objectData;
         math::Make4x4FloatMatrixIdentity(objectData.transform);
 
-        static SkeletonConstantData skeletonData;
-        for (auto i = 0; i < 64; ++i) {
-            math::Make4x4FloatMatrixIdentity(skeletonData.boneTransform[i]);
-        }
         static float anim = 0.0f;
-        anim += 0.01f;   // animate root
-        for (uint32_t i = 0; i < 8; ++i) {
-            math::Make4x4FloatTranslationMatrixCM(skeletonData.boneTransform[i], math::Vec3(0.0f, math::Sin(anim), 0.0f));
+        anim += 0.1f;   // animate root
+
+        static auto neck = GetBoneWithName(&g_data.testSkeleton, "Spine1");
+        auto rot = math::Sin(anim) * 65.0f;
+        math::Make4x4FloatRotationMatrixCMLH(g_data.testSkeleton.joints[neck].localTransform, math::Vec3(0.0f, 1.0f, 0.0f), math::DegreesToRadians(rot));
+
+        static SkeletonConstantData skeletonData;
+        for (auto i = 0; i < MAX_NUM_BONES; ++i) {
+            ComputePose(&g_data.testSkeleton, &skeletonData);
+            //math::Make4x4FloatMatrixIdentity(skeletonData.boneTransform[i]);
         }
+        
 
         {   // frame data
             D3D11_MAPPED_SUBRESOURCE resource;

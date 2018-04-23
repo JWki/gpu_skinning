@@ -1,7 +1,7 @@
 #include "Common.hlslh"
 
 cbuffer Skeleton : register(b0) {
-    float4x4    BoneTransform[64];
+    float4x4    BoneTransform[MAX_NUM_BONES];
 };
 
 cbuffer Object : register(b1) {
