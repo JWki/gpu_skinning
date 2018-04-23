@@ -62,6 +62,7 @@ struct Vertex
     math::Vec3  position;
     math::Vec3  normal;
     float       uv[2];
+    math::Vec4  tangent;
     float       blendWeights[4];
     uint32_t    blendIndices[4];
 
@@ -238,14 +239,142 @@ struct ByteStream
     size_t ReadBytes(void* dest, size_t numBytes)
     {
         numBytes = (offset + numBytes) <= bufferSize ? numBytes : bufferSize - offset;
+        if (dest == nullptr) { offset += numBytes;  return numBytes; };
         memcpy(dest, buffer + offset, numBytes);
         offset += numBytes;
         return numBytes;
     }
 };
 
+bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
+{
+    uint32_t fileSize;
+    ByteStream stream;
+    stream.buffer = (char*)Win32LoadFileContents(path, &fileSize);
+    stream.bufferSize = (size_t)(fileSize);
+    stream.offset = 0;
 
-bool LoadMeshFromFile(const char* path, Mesh* outMesh, ID3D11Device* device)
+    uint32_t numVerticesTotal = 0;
+    uint32_t numIndicesTotal = 0;
+
+    // skip magic number, version number and material information
+    auto magicNumber = stream.Read<uint32_t>();    // magic 
+    assert(magicNumber == 352658064);
+   
+    auto version = stream.Read<uint8_t>();     // version
+    assert(version == 3);
+
+    auto numMaterials = stream.Read<uint8_t>();     // num materials
+    for (uint8_t i = 0; i < numMaterials; ++i) {
+        stream.Read<uint8_t>();     // material ID
+        auto numUVSets = stream.Read<uint8_t>();   
+        for (uint8_t k = 0; k < numUVSets; ++k) {
+            auto numTextures = stream.Read<uint8_t>();
+            for (uint8_t j = 0; j < numTextures; ++j) {
+                stream.Read<uint8_t>();     // texture type hint
+                auto l = stream.Read<uint16_t>();    // filename length
+                char buf[512] = "";
+                stream.ReadBytes(buf, l);    // filename
+                assert(l < 512);
+            }
+        }
+        auto numColors = stream.Read<uint8_t>();
+        for (uint8_t j = 0; j < numColors; ++j) {
+            stream.Read<uint8_t>();     // color type hint
+            math::Vec4 col;
+            stream.ReadBytes(&col.elements[0], sizeof(float) * 4);   // color
+        }
+    }
+    // start reading mesh data
+    auto numSubmeshes = stream.Read<uint8_t>();
+    MeshDesc* submeshDesc = new MeshDesc[numSubmeshes];
+    for (uint8_t i = 0; i < numSubmeshes; ++i) {
+        auto& meshResource = submeshDesc[i];
+        stream.Read<uint8_t>();     // submesh ID
+        stream.Read<uint8_t>();     // material ID
+        meshResource.numVertices = stream.Read<uint32_t>();
+        numVerticesTotal += meshResource.numVertices;
+        
+        size_t totalVertexSize = sizeof(math::Vec3) * 2;
+
+        auto numUVSets = stream.Read<uint8_t>();
+        totalVertexSize += sizeof(float) * 2 * numUVSets;
+        assert(numUVSets == 1);
+        auto numColorChannels = stream.Read<uint8_t>();
+        totalVertexSize += sizeof(math::Vec4) * numColorChannels;
+        assert(numColorChannels == 0);
+
+        auto hasTangents = stream.Read<uint8_t>();
+        totalVertexSize += hasTangents ? sizeof(math::Vec4) : 0;
+        assert(hasTangents == 1);
+
+        auto hasBones = stream.Read<uint8_t>();
+        totalVertexSize += hasBones ? sizeof(float) * 4 * 2 : 0;
+        assert(hasBones == 1);
+
+        assert(sizeof(Vertex) == totalVertexSize);
+
+        meshResource.vertices = new Vertex[meshResource.numVertices];
+        for (uint32_t vtx = 0; vtx < meshResource.numVertices; ++vtx) {     // explicit loop because we convert bone weights
+            auto& vert = meshResource.vertices[vtx];
+
+            vert.position = stream.Read<math::Vec3>();
+            vert.normal = stream.Read<math::Vec3>();
+            stream.ReadBytes(vert.uv, sizeof(float) * 2);
+            vert.tangent = stream.Read<math::Vec4>();   
+            stream.ReadBytes(vert.blendWeights, sizeof(float) * 4);
+            for (auto w = 0; w < 4; ++w) {
+                float indexAsFloat = stream.Read<float>();
+                vert.blendIndices[w] = (uint32_t)(indexAsFloat);
+            }
+        }
+        
+        meshResource.numIndices = stream.Read<uint32_t>();
+        numIndicesTotal += meshResource.numIndices;
+        meshResource.indices = new IndexType[meshResource.numIndices];
+        auto indexSize = stream.Read<uint8_t>();
+        if (indexSize == 4) {
+            stream.ReadBytes(meshResource.indices, sizeof(IndexType) * meshResource.numIndices);
+        }
+        else {
+            for (uint32_t idx = 0; idx < meshResource.numIndices; ++idx) {
+                auto smallIndex = stream.Read<uint16_t>();
+                meshResource.indices[idx] = (uint32_t)(smallIndex);
+            }
+        }
+    }
+    // Merge submeshes
+    MeshDesc meshDesc;
+    meshDesc.numVertices = numVerticesTotal;
+    meshDesc.numIndices = numIndicesTotal;
+
+    meshDesc.vertices = new Vertex[numVerticesTotal];
+    meshDesc.indices = new IndexType[numIndicesTotal];
+
+    Vertex* writeVertexPtr = meshDesc.vertices;
+    IndexType* writeIndexPtr = meshDesc.indices;
+    IndexType indexOffset = 0;
+
+    for (auto i = 0u; i < numSubmeshes; ++i) {
+        auto& submesh = submeshDesc[i];
+        memcpy(writeVertexPtr, submesh.vertices, sizeof(Vertex) * submesh.numVertices);
+        writeVertexPtr += submesh.numVertices;
+        memcpy(writeIndexPtr, submesh.indices, sizeof(IndexType) * submesh.numIndices);
+        for (auto j = 0u; j < submesh.numIndices; ++j) {
+            writeIndexPtr[j] += indexOffset;
+        }
+        writeIndexPtr += submesh.numIndices;
+        indexOffset += submesh.numVertices;
+    }
+
+    auto res = CreateMesh(device, &meshDesc, outMesh);
+    delete[] submeshDesc;
+    return res;
+
+    return true;
+}
+
+bool ImportGTMesh(const char* path, Mesh* outMesh, ID3D11Device* device)
 {
     uint32_t fileSize;
     ByteStream stream;
@@ -376,7 +505,7 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         printf("Created test mesh\n");
     }
     */
-    if (!LoadMeshFromFile("assets/character.gtmesh", &g_data.testMesh, device)) {
+    if (!ImportSGM("assets/character.sgm", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
@@ -457,9 +586,9 @@ void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
     {   // update constant buffers
         static FrameConstantData frameData;    
-        math::Make4x4FloatProjectionMatrixCMLH(frameData.projection, math::DegreesToRadians(60.0f), vp.Width, vp.Height, 0.1f, 100.0f);
+        math::Make4x4FloatProjectionMatrixCMLH(frameData.projection, math::DegreesToRadians(60.0f), vp.Width, vp.Height, 0.1f, 1000.0f);
         float inverseCamera[16];
-        math::Make4x4FloatLookAtMatrixCMLH(inverseCamera, math::Vec3(0.0f, 2.5f, -2.5f), math::Vec3(0.0f, 1.0f, 0.0f), math::Vec3(0.0f, 1.0f, 0.0f));
+        math::Make4x4FloatLookAtMatrixCMLH(inverseCamera, math::Vec3(0.0f, 1.5f, -3.5f), math::Vec3(0.0f, 1.0f, 0.0f), math::Vec3(0.0f, 1.0f, 0.0f));
         math::Inverse4x4FloatMatrixCM(inverseCamera, frameData.camera);
         math::MultiplyMatricesCM(frameData.projection, frameData.camera, frameData.cameraProjection);
 
@@ -471,8 +600,8 @@ void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             math::Make4x4FloatMatrixIdentity(skeletonData.boneTransform[i]);
         }
         static float anim = 0.0f;
-       // anim += 0.001f;   // animate root 
-        math::Make4x4FloatTranslationMatrixCM(skeletonData.boneTransform[0], math::Vec3(0.0f, math::Sin(anim), 0.0f));
+        anim += 0.001f;   // animate root 
+        //math::Make4x4FloatTranslationMatrixCM(skeletonData.boneTransform[0], math::Vec3(0.0f, math::Sin(anim), 0.0f));
 
 
         {   // frame data
