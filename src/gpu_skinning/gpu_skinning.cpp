@@ -600,9 +600,10 @@ void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             math::Make4x4FloatMatrixIdentity(skeletonData.boneTransform[i]);
         }
         static float anim = 0.0f;
-        anim += 0.001f;   // animate root 
-        //math::Make4x4FloatTranslationMatrixCM(skeletonData.boneTransform[0], math::Vec3(0.0f, math::Sin(anim), 0.0f));
-
+        anim += 0.01f;   // animate root
+        for (uint32_t i = 0; i < 8; ++i) {
+            math::Make4x4FloatTranslationMatrixCM(skeletonData.boneTransform[i], math::Vec3(0.0f, math::Sin(anim), 0.0f));
+        }
 
         {   // frame data
             D3D11_MAPPED_SUBRESOURCE resource;
