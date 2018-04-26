@@ -89,6 +89,8 @@ namespace math
         return a * (1.0f - alpha) + b * alpha;
     }
 
+  
+
     template <class TValue>
     static TValue Min(TValue a, TValue b)
     {
@@ -223,6 +225,26 @@ namespace math
         return false;
     }
 
+
+    static Vec4 Slerp(Vec4 a, Vec4 b, float alpha)
+    {
+        auto dot = Dot(a, b);
+        if (dot < 0.0f) {
+            b = -b;
+            dot = -dot;
+        }
+        const float threshold = 0.9995f;
+        if (dot > threshold) {
+            return Normalize(a + alpha * (b - a));
+        }
+        dot = Clamp(dot, -1.0f, 1.0f);
+        float theta0 = acosf(dot);
+        float theta = theta0 * alpha;
+        float s0 = Cos(theta) - dot * Sin(theta) / Sin(theta0);
+        float s1 = Sin(theta) / Sin(theta0);
+
+        return (s0 * a) + (s1 * b);
+    }
     ///
     float Random(uint32_t& randomState);
     Vec3 RandomInUnitDisk(uint32_t& randomState);

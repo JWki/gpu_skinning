@@ -57,6 +57,8 @@ bl_info = {
 #	bone name length - uint16
 #	bone name - char*bone name length
 #	bone position xyz - float32*3
+#	bone scale xyz - float32*3
+#	bone rotation xyzw (quaternion) - 4*float32
 #	bone is a root (does not have a parent) - uint8 0 if not, 1 otherwise
 #	bone number of children - uint16
 #		child index within this list of bones - uint16
@@ -253,9 +255,9 @@ class c_mesh(object):
 					inddict[verttuple] = len(self.vertices)
 					self.vertices.append(trivert)
 			
-			self.indices.append(ind[0])
-			self.indices.append(ind[1])
 			self.indices.append(ind[2])
+			self.indices.append(ind[1])
+			self.indices.append(ind[0])
 	
 	#generates tangent for the given face
 	def genfacetangent(self, vertex, neighbour_a, neighbour_b, bitangent0, bitangent1, bitangent2):
@@ -523,10 +525,10 @@ class c_object(object):
 			print("write interleaved vertex data")
 			
 			for vertex in mesh.vertices:
-				bindata = struct.pack('<fff', -vertex.position[0], vertex.position[2], vertex.position[1])
+				bindata = struct.pack('<fff', vertex.position[0], vertex.position[2], vertex.position[1])
 				file.write(bindata)
 				
-				bindata = struct.pack('<fff', -vertex.normal[0], vertex.normal[2], vertex.normal[1])
+				bindata = struct.pack('<fff', vertex.normal[0], vertex.normal[2], vertex.normal[1])
 				file.write(bindata)
 
 				set = 0
@@ -540,7 +542,7 @@ class c_object(object):
 					file.write(bindata)
 				
 				if exptangents == True:
-					bindata = struct.pack('<ffff', -vertex.tangent[0], vertex.tangent[2], vertex.tangent[1], vertex.tangent[3])
+					bindata = struct.pack('<ffff', vertex.tangent[0], vertex.tangent[2], vertex.tangent[1], vertex.tangent[3])
 					file.write(bindata)
 					
 				if self.hasbones == True:
@@ -593,12 +595,12 @@ class c_animation(object):
 		self.frames = {}
 
 class c_bone(object):
-	__slots__ = 'name', 'children', 'position', 'isroot'
-	def __init__(self, name, position, isroot):
+	__slots__ = 'name', 'children', 'position', 'scale', 'rotation', 'isroot'
+	def __init__(self, name, transform, isroot):
 		self.name = name
 		self.children = []
-		self.position = position
-		self.isroot = isroot;
+		self.position, self.rotation, self.scale = transform.decompose()
+		self.isroot = isroot
 
 
 class c_armature(object):
@@ -619,20 +621,21 @@ class c_armature(object):
 #		armature.select = True
 #		bpy.context.scene.objects.active = armature
 #		bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
-
-		#get skeleton data
-		for bone in armature.data.bones:
-			b = c_bone(bone.name, armature.matrix_world*bone.head_local, False if bone.parent else True)	#add bone
-			for child in bone.children:
-				b.children.append(armature.data.bones.find(child.name))
-			self.bones.append(b)
-
 		vertspacemat = mathutils.Matrix.Identity(4)
-		vertspacemat[0][0] = -1
+		vertspacemat[0][0] = 1
 		vertspacemat[1][1] = 0
 		vertspacemat[1][2] = 1
 		vertspacemat[2][2] = 0
 		vertspacemat[2][1] = 1
+
+		#get skeleton data
+		for bone in armature.data.bones:
+			b = c_bone(bone.name, (armature.matrix_world * bone.matrix_local).to_4x4(), False if bone.parent else True)	#add bone
+			for child in bone.children:
+				b.children.append(armature.data.bones.find(child.name))
+			self.bones.append(b)
+
+		
 
 		#get animation frames
 		frame_current = bpy.context.scene.frame_current
@@ -644,16 +647,13 @@ class c_armature(object):
 				for i, bone in enumerate(armature.pose.bones):
 					index = armature.data.bones.find(bone.bone.name)
 					
-					trans = Matrix.Translation(vertspacemat*bone.bone.head_local)
-					itrans = Matrix.Translation(vertspacemat*(-bone.bone.head_local))
+					transform = bone.matrix
 					if bone.parent:
-						mat_final = itrans*vertspacemat*bone.parent.bone.matrix_local*(vertspacemat*bone.parent.matrix).inverted()*vertspacemat*bone.matrix*(vertspacemat*bone.bone.matrix_local).inverted()*trans
-					else:
-						mat_final = itrans*vertspacemat*bone.matrix*(vertspacemat*bone.bone.matrix_local).inverted()*trans
-					pos, rot, scal = mat_final.decompose()
+						transform = transform * (bone.parent.matrix).inverted()
 
-					rot = (rot[1], rot[2], rot[3], rot[0])
-					boneframe = c_boneframe(frame-action.frame_range[0], pos, scal, rot)
+					transform = bone.matrix
+					pos, rot, scale = (armature.matrix_world * transform).decompose()
+					boneframe = c_boneframe(frame-action.frame_range[0], pos, mathutils.Vector((1,1,1)), rot)
 					if frame == action.frame_range[0]:
 						anim.frames[index] = []
 					(anim.frames[index]).append(boneframe)
@@ -702,8 +702,13 @@ class c_armature(object):
 			bonename = bone.name.encode('utf_8')
 			file.write(struct.pack('<H', len(bonename)+1))
 			file.write(struct.pack('<%is'%(len(bonename)+1), bonename))
-			bindata = struct.pack('<fff', -bone.position[0], bone.position[2], bone.position[1])
-			file.write(bindata)
+			#file.write(struct.pack('<ffff', bone.transform.col[0][0], bone.transform.col[0][1], bone.transform.col[0][2], bone.transform.col[0][3]))
+			#file.write(struct.pack('<ffff', bone.transform.col[1][0], bone.transform.col[1][1], bone.transform.col[1][2], bone.transform.col[1][3]))
+			#file.write(struct.pack('<ffff', bone.transform.col[2][0], bone.transform.col[2][1], bone.transform.col[2][2], bone.transform.col[2][3]))
+			#file.write(struct.pack('<ffff', bone.transform.col[3][0], bone.transform.col[3][1], bone.transform.col[3][2], bone.transform.col[3][3]))
+			file.write(struct.pack('<fff', bone.position.x, bone.position.z, bone.position.y))
+			file.write(struct.pack('<fff', bone.scale.x, bone.scale.z, bone.scale.y))				
+			file.write(struct.pack('<ffff', bone.rotation.x, bone.rotation.z, bone.rotation.y, -bone.rotation.w))				
 			file.write(struct.pack('<B', 1 if bone.isroot else 0))
 			file.write(struct.pack('<H', len(bone.children)))
 			for child in bone.children:
@@ -720,11 +725,11 @@ class c_armature(object):
 				file.write(struct.pack('<L', len(boneframes)))
 				for frame in boneframes:
 					file.write(struct.pack('<f', frame.time))
-					bindata = struct.pack('<fff', frame.position[0], frame.position[1], frame.position[2])
+					bindata = struct.pack('<fff', frame.position.x, frame.position.z, frame.position.y)
 					file.write(bindata)
-					bindata = struct.pack('<fff', frame.scale[0], frame.scale[1], frame.scale[2])
+					bindata = struct.pack('<fff', frame.scale.x, frame.scale.z, frame.scale.y)
 					file.write(bindata)
-					bindata = struct.pack('<ffff', frame.rotation[0], frame.rotation[1], frame.rotation[2], frame.rotation[3])
+					bindata = struct.pack('<ffff', frame.rotation.x, frame.rotation.z, frame.rotation.y, -frame.rotation.w)
 					file.write(bindata)
 		file.close()
 

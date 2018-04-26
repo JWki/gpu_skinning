@@ -113,6 +113,20 @@ def save(operator, context, filepath="", use_selection=True, global_matrix=None)
                 uvs = (tex.data[i].uv[n][0], tex.data[i].uv[n][1])
                 blendWeights = [1.0, 0.0, 0.0, 0.0]
                 blendIndices = [0, 0, 0, 0]
+
+                groups = sorted(blender_mesh.vertices[vertIdx].groups, key=lambda item: item.weight, reverse=True)  
+                sumweights = 0
+                for g, group in enumerate(groups):
+                    if g > 3:
+                        break
+                    sumweights += group.weight
+                
+                for g, group in enumerate(groups)
+                    if g > 3:
+                        print("data loss: vertex with more than 4 bones assigned")
+                        break
+                    blendWeights[g] = group.weight/sumweights
+                    blendIndices[g] = ArmatureList[0].object.data.bones.find(objpar)
                 
                 faceVertices.append(Vertex(vertIdx, position, normal, uvs, blendWeights, blendIndices))
             faces.append(Face(faceVertices))

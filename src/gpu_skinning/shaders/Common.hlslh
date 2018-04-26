@@ -4,6 +4,7 @@ struct VS_SurfaceOutput
     float4 normal : NORMAL;
     float2 texcoords : TEXCOORD0;
     float4 worldPos : TEXCOORD1;
+	float4 color : COLOR;
 };
 
 #define MAX_NUM_BONES 128
