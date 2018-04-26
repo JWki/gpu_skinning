@@ -444,6 +444,7 @@ struct Animation
 {
     char*       name  = "";
     BoneTrack   tracks[MAX_NUM_BONES];
+    float       duration = 0.0f;
 };
 
 struct AnimationState
@@ -498,6 +499,7 @@ bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animatio
             stream.ReadBytes(anim.name, nameLen);
             auto numAffectedBones = stream.Read<uint16_t>();
            
+            float biggestTimestamp = 0.0f;
             for (uint16_t j = 0; j < numAffectedBones; ++j) {
                 auto importId = stream.Read<uint16_t>();
                 auto id = GetBoneWithImportId(targetSkeleton, importId);
@@ -507,6 +509,7 @@ bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animatio
                 for (uint32_t k = 0; k < track.numKeyframes; ++k) {
                     auto& frame = track.keyframes[k];
                     frame.timeStamp = stream.Read<float>();
+                    if (frame.timeStamp > biggestTimestamp) { biggestTimestamp = frame.timeStamp; }
                     frame.jointTransform.position = stream.Read<math::Vec3>();  
                     stream.Read<math::Vec3>();  // ignore scale
                     frame.jointTransform.rotation = stream.Read<math::Vec4>();  // rotation as a 4-component quaternion
@@ -517,6 +520,7 @@ bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animatio
                         frame.jointTransform.rotation.w);
                 }
             }
+            anim.duration = biggestTimestamp;
         }
     }
     return true;
@@ -1012,10 +1016,13 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     math::Make4x4FloatMatrixIdentity(g_data.objectData.transform);
     ///
     static bool animate = true;
-    g_data.animState.animationTime += animate ? 0.16f * 4.0f : 0.0f;
-    if (g_data.animState.animationTime > 50.0f) {
-        g_data.animState.animationTime -= 50.0f;
+    auto speed = (60.0f) * ImGui::GetIO().DeltaTime;
+    g_data.animState.animationTime += animate ? speed : 0.0f;
+    if (g_data.animState.animationTime > g_data.animState.currentAnim->duration) {
+        g_data.animState.animationTime -= g_data.animState.currentAnim->duration;
     }
+
+    ImGui::ShowTestWindow();
 
     static bool tPose = false;
     static bool showSkeleton = true;
