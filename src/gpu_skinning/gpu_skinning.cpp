@@ -926,11 +926,11 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     printf("Created test skeleton\n");
 
     uint32_t numAnimations = 0;
-    if (!ImportAnimationFromSGA("assets/dance.sga", &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
+    if (!ImportAnimationFromSGA("assets/running.sga", &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
         printf("failed to load a single animation from %s\n", "assets/dance.sga");
         return;
     }
-    if (!ImportAnimationFromSGA("assets/dance.sga", &g_data.testSkeleton, &g_data.testAnim, &numAnimations)) {
+    if (!ImportAnimationFromSGA("assets/running.sga", &g_data.testSkeleton, &g_data.testAnim, &numAnimations)) {
         printf("failed to load animation from %s\n", "assets/dance.sga");
         return;
     }
@@ -1057,7 +1057,16 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             math::Make4x4FloatRotationMatrixCMLH(r, math::Vec3(0.0f, 1.0f, 0.0f), math::DegreesToRadians(25.0f));
             math::Copy4x4FloatMatrixCM(r, joint.localTransform);
         }
+
+        {   // root motion
+            auto& rootJoint = g_data.testSkeleton.joints[0];
+            auto rootMotionTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.localTransform, 3).xyz;
+            auto bindTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.bindpose, 3).xyz;
+            math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, rootMotionTranslation - bindTranslation);
+            math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, bindTranslation);
+        }
     }
+
 
     if (transformHierarchy) {
         TransformHierarchy(&g_data.testSkeleton);
@@ -1067,6 +1076,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             math::Copy4x4FloatMatrixCM(g_data.testSkeleton.joints[i].localTransform, g_data.testSkeleton.joints[i].globalTransform);
         }
     }
+
     GetSkinningTransforms(&g_data.testSkeleton, &g_data.skeletonData);
     ///
     //
