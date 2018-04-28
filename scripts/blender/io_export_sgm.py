@@ -630,7 +630,10 @@ class c_armature(object):
 
 		#get skeleton data
 		for bone in armature.data.bones:
-			b = c_bone(bone.name, (armature.matrix_world * bone.matrix_local).to_4x4(), False if bone.parent else True)	#add bone
+			transform = armature.matrix_world * bone.matrix_local
+			if bone.parent:
+				transform = ((bone.parent.matrix_local).inverted() * (bone.matrix_local))
+			b = c_bone(bone.name, transform, False if bone.parent else True)	#add bone
 			for child in bone.children:
 				b.children.append(armature.data.bones.find(child.name))
 			self.bones.append(b)
@@ -647,12 +650,12 @@ class c_armature(object):
 				for i, bone in enumerate(armature.pose.bones):
 					index = armature.data.bones.find(bone.bone.name)
 					
-					transform = (armature.matrix_world) * bone.matrix
+					transform = armature.matrix_world * bone.matrix 
 					if bone.parent:
-						transform = (armature.matrix_world * bone.matrix) * (armature.matrix_world * bone.parent.matrix).inverted()
+						transform = (bone.parent.matrix).inverted() * (bone.matrix)
 					#transform = bone.matrix
 					pos, rot, scale = (transform).decompose()
-					boneframe = c_boneframe(frame-action.frame_range[0], pos, mathutils.Vector((1,1,1)), rot)
+					boneframe = c_boneframe(frame-action.frame_range[0], pos, scale, rot)
 					if frame == action.frame_range[0]:
 						anim.frames[index] = []
 					(anim.frames[index]).append(boneframe)

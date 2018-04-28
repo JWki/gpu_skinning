@@ -358,17 +358,25 @@ bool ImportSkeletonFromMemory(ByteStream& stream, Skeleton* outSkeleton)
         */
         //stream.ReadBytes(tempSkeleton.bindpose[i], sizeof(float) * 16);
         auto pos = stream.Read<math::Vec3>();
-        auto scale = stream.Read<math::Vec3>();
+        auto scale = stream.Read<math::Vec3>();  // ignore scale 
         auto rot = stream.Read<math::Vec4>();
 
         float rotMat[16];
         float transMat[16];
+        float transScaled[16];
+        float scaleMat[16];
         QuatToMatrix(rot, rotMat);
-        math::Make4x4FloatTranslationMatrixCM(transMat, pos);
+        math::Make4x4FloatTranslationMatrixCM(transMat, pos);   // 
+        math::Make4x4FloatMatrixIdentity(scaleMat);
+        scaleMat[0] = scale.x;
+        scaleMat[5] = scale.y;
+        scaleMat[10] = scale.z;
+        
+        math::MultiplyMatricesCM(transMat, scaleMat, transScaled);
+        math::MultiplyMatricesCM(transScaled, rotMat, tempSkeleton.joints[i].bindpose);
+       
 
-        math::MultiplyMatricesCM(transMat, rotMat, tempSkeleton.bindpose[i]);
-        // math::Copy4x4FloatMatrixCM(tempSkeleton.bindpose[i], tempSkeleton.joints[i].bindpose);
-
+        //math::Make4x4FloatTranslationMatrixCM(tempSkeleton.joints[i].bindpose, pos);
         auto isParent = stream.Read<uint8_t>() == 1;
         if (isParent) {
             joint.parent = -1;
@@ -392,16 +400,14 @@ bool ImportSkeletonFromMemory(ByteStream& stream, Skeleton* outSkeleton)
     for (int i = 0; i < (int)outSkeleton->numJoints; ++i) {
         assert(outSkeleton->joints[i].parent < i);
     }
-    // compute actual inverse bind transform as well as parent relative bindposes for each bone
+    // compute inverse bind transforms as well as global space bind and inverse bind transform for each bone
     for (int i = 0; i < (int)outSkeleton->numJoints; ++i) {
         auto& joint = outSkeleton->joints[i];
         if (joint.parent == -1) {
-            math::Copy4x4FloatMatrixCM(outSkeleton->bindpose[i], joint.bindpose);
+            math::Copy4x4FloatMatrixCM(joint.bindpose, outSkeleton->bindpose[i]);
         }
         else {
-            float inverseParent[16];
-            math::Inverse4x4FloatMatrixCM(outSkeleton->bindpose[joint.parent], inverseParent);
-            math::MultiplyMatricesCM(outSkeleton->bindpose[i], inverseParent, joint.bindpose);
+            math::MultiplyMatricesCM(outSkeleton->bindpose[joint.parent], joint.bindpose, outSkeleton->bindpose[i]);
         }
         math::Inverse4x4FloatMatrixCM(outSkeleton->bindpose[i], outSkeleton->invBindpose[i]);
         math::Inverse4x4FloatMatrixCM(joint.bindpose, joint.invBindpose);
@@ -426,6 +432,7 @@ struct JointTransform
 {
     math::Vec3 position;
     math::Vec4 rotation;    // "quaternion"
+    math::Vec3 scale;
 };
 
 struct KeyFrame
@@ -511,13 +518,8 @@ bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animatio
                     frame.timeStamp = stream.Read<float>();
                     if (frame.timeStamp > biggestTimestamp) { biggestTimestamp = frame.timeStamp; }
                     frame.jointTransform.position = stream.Read<math::Vec3>();  
-                    stream.Read<math::Vec3>();  // ignore scale
+                    frame.jointTransform.scale = stream.Read<math::Vec3>();     // 
                     frame.jointTransform.rotation = stream.Read<math::Vec4>();  // rotation as a 4-component quaternion
-                    frame.jointTransform.rotation = math::Vec4(
-                        frame.jointTransform.rotation.x,
-                        frame.jointTransform.rotation.y,
-                        frame.jointTransform.rotation.z,
-                        frame.jointTransform.rotation.w);
                 }
             }
             anim.duration = biggestTimestamp;
@@ -546,6 +548,7 @@ void ResetLocalTransforms(Skeleton* skeleton)
 void InterpolateJointTransforms(const JointTransform& a, const JointTransform& b, float alpha, JointTransform* outTransform)
 {
     outTransform->position = math::Lerp(a.position, b.position, alpha);
+    outTransform->scale = math::Lerp(a.scale, b.scale, alpha);
     outTransform->rotation = math::Normalize(math::Slerp(a.rotation, b.rotation, alpha));    // @TODO use SLERP
 }
 
@@ -578,10 +581,16 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState)
         // 
         float rot[16];
         float transl[16];
+        float scale[16];
+        float translScale[16];
         QuatToMatrix(poseTransform.rotation, rot);
         math::Make4x4FloatTranslationMatrixCM(transl, poseTransform.position);
-
-        math::MultiplyMatricesCM(transl, rot, skeleton->joints[i].localTransform);
+        math::Make4x4FloatMatrixIdentity(scale);
+        scale[0] = poseTransform.scale.x;
+        scale[5] = poseTransform.scale.y;
+        scale[10] = poseTransform.scale.z;
+        math::MultiplyMatricesCM(transl, scale, translScale);
+        math::MultiplyMatricesCM(translScale, rot, skeleton->joints[i].localTransform);
     }
     //
 }
@@ -591,7 +600,7 @@ void TransformHierarchy(Skeleton* skeleton)
     for (auto i = 0u; i < skeleton->numJoints; ++i) {
         if (skeleton->joints[i].parent != -1) {
             auto& parent = skeleton->joints[skeleton->joints[i].parent];
-            math::MultiplyMatricesCM(skeleton->joints[i].localTransform, parent.globalTransform, skeleton->joints[i].globalTransform);
+            math::MultiplyMatricesCM(parent.globalTransform, skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
         }
         else {
             math::Copy4x4FloatMatrixCM(skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
@@ -917,11 +926,11 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     printf("Created test skeleton\n");
 
     uint32_t numAnimations = 0;
-    if (!ImportAnimationFromSGA("assets/running.sga", &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
+    if (!ImportAnimationFromSGA("assets/dance.sga", &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
         printf("failed to load a single animation from %s\n", "assets/dance.sga");
         return;
     }
-    if (!ImportAnimationFromSGA("assets/running.sga", &g_data.testSkeleton, &g_data.testAnim, &numAnimations)) {
+    if (!ImportAnimationFromSGA("assets/dance.sga", &g_data.testSkeleton, &g_data.testAnim, &numAnimations)) {
         printf("failed to load animation from %s\n", "assets/dance.sga");
         return;
     }
@@ -1026,31 +1035,31 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
     static bool tPose = false;
     static bool showSkeleton = true;
-    static bool transformHierarchy = false;
+    static bool transformHierarchy = true;
     ResetLocalTransforms(&g_data.testSkeleton);
+    animate = animate && !tPose;
     if (!tPose) {
         ComputeLocalPoses(&g_data.testSkeleton, &g_data.animState);
     }
 
     {   // override local poses here
-        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "LeftShoulder");
-        for (auto i = shoulder; i < shoulder + 1; ++i) {
+        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "LeftArm");
+        for (auto i = shoulder; i == shoulder; ++i) {
             auto& joint = g_data.testSkeleton.joints[i];
             
-            float rotation[16];
-            float angle = g_data.animState.animationTime;
-            math::Make4x4FloatRotationMatrixCMLH(rotation, math::Vec3(1.0f, 0.0f, 0.0f), math::DegreesToRadians(angle));
+            float r[16];
+            float t[16];
+            math::Make4x4FloatMatrixIdentity(t);
             if (joint.parent != -1) {
-                // make relative to parent and copy into local pose
-                //math::Copy4x4FloatMatrixCM(rotation, joint.localTransform);
+                auto& parent = g_data.testSkeleton.joints[joint.parent];
+               // auto translation = 
             }
-            else {
-                //math::Copy4x4FloatMatrixCM(rotation, joint.localTransform);
-            }
-
-        }   
+            math::Make4x4FloatRotationMatrixCMLH(r, math::Vec3(0.0f, 1.0f, 0.0f), math::DegreesToRadians(25.0f));
+            math::Copy4x4FloatMatrixCM(r, joint.localTransform);
+        }
     }
-    if(tPose || transformHierarchy) {
+
+    if (transformHierarchy) {
         TransformHierarchy(&g_data.testSkeleton);
     }
     else {
@@ -1102,12 +1111,11 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         for (auto i = 0u; showSkeleton && i < g_data.testSkeleton.numJoints; ++i) {
 
             auto boneHead = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[i].globalTransform, 3).xyz;
-            //boneHead = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.bindpose[i], 3).xyz;
             auto screenPos = WorldToScreen(boneHead);
 
-            auto boneU = math::TransformPositionCM(math::Vec3(0.2f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 0.2f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 0.2f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneU = math::TransformPositionCM(math::Vec3(0.2f, 0.0f, 0.0f) * 100, g_data.testSkeleton.joints[i].globalTransform);
+            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 0.2f, 0.0f) * 100, g_data.testSkeleton.joints[i].globalTransform);
+            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 0.2f) * 100, g_data.testSkeleton.joints[i].globalTransform);
 
             auto boneUPos = WorldToScreen(boneU);
             auto boneVPos = WorldToScreen(boneV);
