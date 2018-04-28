@@ -647,12 +647,11 @@ class c_armature(object):
 				for i, bone in enumerate(armature.pose.bones):
 					index = armature.data.bones.find(bone.bone.name)
 					
-					transform = bone.matrix
+					transform = (armature.matrix_world) * bone.matrix
 					if bone.parent:
-						transform = transform * (bone.parent.matrix).inverted()
-
-					transform = bone.matrix
-					pos, rot, scale = (armature.matrix_world * transform).decompose()
+						transform = (armature.matrix_world * bone.matrix) * (armature.matrix_world * bone.parent.matrix).inverted()
+					#transform = bone.matrix
+					pos, rot, scale = (transform).decompose()
 					boneframe = c_boneframe(frame-action.frame_range[0], pos, mathutils.Vector((1,1,1)), rot)
 					if frame == action.frame_range[0]:
 						anim.frames[index] = []
