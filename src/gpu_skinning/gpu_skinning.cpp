@@ -553,7 +553,7 @@ void InterpolateJointTransforms(const JointTransform& a, const JointTransform& b
 }
 
 
-void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState)
+void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLoop)
 {
     auto& anim = *animState->currentAnim;
     auto time = animState->animationTime;
@@ -572,6 +572,13 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState)
 
         JointTransform poseTransform;
         float alpha = (time - prevKeyframe->timeStamp) / (nextKeyframe->timeStamp - prevKeyframe->timeStamp);
+
+        //if (didLoop) {
+        //    // the previous keyframe will be the last keyframe in the track
+        //    prevKeyframe = &anim.tracks[i].keyframes[anim.tracks[i].numKeyframes - 1]; // @NOTE this is a bit hacky tho
+        //    alpha = time;
+        //}
+
         if (prevKeyframe == nextKeyframe) {
             poseTransform = prevKeyframe->jointTransform;
         }
@@ -628,7 +635,8 @@ struct AppData
     Mesh        testMesh;
     Shader      shader;
 
-    Animation       testAnim;
+    uint32_t        currentAnim = 0;
+    Animation       testAnim[4];
     AnimationState  animState;
 
     ID3D11Buffer* frameConstantBuffer;
@@ -868,10 +876,12 @@ bool ImportGTMesh(const char* path, Mesh* outMesh, ID3D11Device* device)
     return res;
 }
 
+
+const char* animFiles[] = { "assets/idle.sga", "assets/walking.sga", "assets/vaulting.sga", "assets/running.sga" };
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
-#ifdef GT_DEBUG
+#ifdef GT_DEBUG 
     static const char* vShaderPath = "bin/Debug/SkinnedGeometry.cso";
     static const char* pShaderPath = "bin/Debug/DefaultShading.cso";
 #else
@@ -926,17 +936,23 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     printf("Created test skeleton\n");
 
     uint32_t numAnimations = 0;
-    if (!ImportAnimationFromSGA("assets/running.sga", &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
-        printf("failed to load a single animation from %s\n", "assets/dance.sga");
-        return;
+    uint32_t currentImportAnimation = 0;
+    
+    for (uint32_t i = 0; i < 4; ++i) {
+        if (!ImportAnimationFromSGA(animFiles[i], &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
+            printf("failed to load a single animation from %s\n", animFiles[i]);
+            return;
+        }
+        if (!ImportAnimationFromSGA(animFiles[i], &g_data.testSkeleton, &g_data.testAnim[currentImportAnimation], &numAnimations)) {
+            printf("failed to load animation from %s\n", animFiles[i]);
+            return;
+        }
+        printf("loaded anim: %s\n", g_data.testAnim[currentImportAnimation].name);
+        currentImportAnimation++;
     }
-    if (!ImportAnimationFromSGA("assets/running.sga", &g_data.testSkeleton, &g_data.testAnim, &numAnimations)) {
-        printf("failed to load animation from %s\n", "assets/dance.sga");
-        return;
-    }
-    printf("loaded anim: %s\n", g_data.testAnim.name);
     g_data.animState.animationTime = 0.0f;
-    g_data.animState.currentAnim = &g_data.testAnim;
+    g_data.currentAnim = 0;
+    g_data.animState.currentAnim = &g_data.testAnim[0];
 
     {   ///
         {   // frame constant data
@@ -1024,11 +1040,25 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
     math::Make4x4FloatMatrixIdentity(g_data.objectData.transform);
     ///
+    static float animSpeedMod = 1.0f;
     static bool animate = true;
+    static bool rootMotion = false;
+    static bool sequence = true;
+    bool loop = true;
     auto speed = (60.0f) * ImGui::GetIO().DeltaTime;
-    g_data.animState.animationTime += animate ? speed : 0.0f;
-    if (g_data.animState.animationTime > g_data.animState.currentAnim->duration) {
+    bool didLoop = false;   // for root motion 
+    g_data.animState.animationTime += animate ? animSpeedMod * speed : 0.0f;
+    if (g_data.animState.animationTime > g_data.animState.currentAnim->duration && loop) {
         g_data.animState.animationTime -= g_data.animState.currentAnim->duration;
+        didLoop = true;
+    }
+    if (g_data.animState.animationTime < 0.0f && loop) {
+        g_data.animState.animationTime += g_data.animState.currentAnim->duration;
+        didLoop = true;
+    }
+    if (didLoop && sequence) {
+        g_data.currentAnim = (g_data.currentAnim + 1) % 4;
+        g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
     }
 
     ImGui::ShowTestWindow();
@@ -1039,7 +1069,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ResetLocalTransforms(&g_data.testSkeleton);
     animate = animate && !tPose;
     if (!tPose) {
-        ComputeLocalPoses(&g_data.testSkeleton, &g_data.animState);
+        ComputeLocalPoses(&g_data.testSkeleton, &g_data.animState, didLoop);
     }
 
     {   // override local poses here
@@ -1058,12 +1088,28 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             math::Copy4x4FloatMatrixCM(r, joint.localTransform);
         }
 
+        static math::Vec3 objectPosition;
+        if(rootMotion)
         {   // root motion
             auto& rootJoint = g_data.testSkeleton.joints[0];
+            static math::Vec3 rootMotionCache = math::Get4x4FloatMatrixColumnCM(rootJoint.bindpose, 3).xyz;
+            math::Vec3 bindposeTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.bindpose, 3).xyz;
+            if (didLoop) {  // 
+                rootMotionCache = bindposeTranslation;
+                if (animSpeedMod < 0.0f) {
+                    auto numKeyframes = g_data.animState.currentAnim->tracks[0].numKeyframes;
+                    auto lastKeyframe = g_data.animState.currentAnim->tracks[0].keyframes[numKeyframes - 1];
+                    rootMotionCache = lastKeyframe.jointTransform.position;
+                }
+            }
+
             auto rootMotionTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.localTransform, 3).xyz;
-            auto bindTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.bindpose, 3).xyz;
-            math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, rootMotionTranslation - bindTranslation);
-            math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, bindTranslation);
+            objectPosition += rootMotionTranslation - rootMotionCache;
+            math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
+            rootMotionCache = rootMotionTranslation;
+            math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, bindposeTranslation);
+        } else {
+            objectPosition = math::Vec3();
         }
     }
 
@@ -1086,6 +1132,21 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::Checkbox("Show Skeleton", &showSkeleton);
         ImGui::Checkbox("Transform Hierarchy", &transformHierarchy);
         ImGui::Checkbox("Animate", &animate);
+        ImGui::Checkbox("Root Motion", &rootMotion);
+        ImGui::Checkbox("Loop", &loop);
+        ImGui::Checkbox("Sequence", &sequence);
+        ImGui::SliderFloat("Playback Speed Modifier", &animSpeedMod, -1.0f, 1.0f);
+
+        if (ImGui::BeginCombo("Animation Clip", animFiles[g_data.currentAnim])) {
+            for (uint32_t i = 0; i < 4; ++i) {
+                if (ImGui::Selectable(animFiles[i], i == g_data.currentAnim)) {
+                    g_data.currentAnim = i;
+                    g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
+                }
+            }
+            ImGui::EndCombo();
+        }
+
         for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) {
             auto& joint = g_data.testSkeleton.joints[i];
             if (ImGui::Selectable(g_data.testSkeleton.nameTable[i], selectedJoint == i)) {
@@ -1117,20 +1178,24 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         drawList->AddLine(ImVec2(o.x, o.y), ImVec2(v.x, v.y), ImColor(0.0f, 0.0f, 1.0f), 4.0f);
         drawList->AddLine(ImVec2(o.x, o.y), ImVec2(w.x, w.y), ImColor(0.0f, 1.0f, 0.0f), 4.0f);
 
-
         for (auto i = 0u; showSkeleton && i < g_data.testSkeleton.numJoints; ++i) {
 
             auto boneHead = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[i].globalTransform, 3).xyz;
+            boneHead = math::TransformPositionCM(boneHead, g_data.objectData.transform);
             auto screenPos = WorldToScreen(boneHead);
 
-            auto boneU = math::TransformPositionCM(math::Vec3(0.2f, 0.0f, 0.0f) * 100, g_data.testSkeleton.joints[i].globalTransform);
-            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 0.2f, 0.0f) * 100, g_data.testSkeleton.joints[i].globalTransform);
-            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 0.2f) * 100, g_data.testSkeleton.joints[i].globalTransform);
+            auto boneU = math::TransformPositionCM(math::Vec3(1.0f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 1.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 1.0f), g_data.testSkeleton.joints[i].globalTransform);
+
+            boneU = math::TransformPositionCM(boneU, g_data.objectData.transform);
+            boneV = math::TransformPositionCM(boneV, g_data.objectData.transform);
+            boneW = math::TransformPositionCM(boneW, g_data.objectData.transform);
+
 
             auto boneUPos = WorldToScreen(boneU);
             auto boneVPos = WorldToScreen(boneV);
             auto boneWPos = WorldToScreen(boneW);
-
 
             ImVec2 labelPos(screenPos.x, screenPos.y);
 
@@ -1149,6 +1214,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             auto parent = g_data.testSkeleton.joints[i].parent;
             if (parent != -1) {
                 auto parentPos = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[parent].globalTransform, 3).xyz;
+                parentPos = math::TransformPositionCM(parentPos, g_data.objectData.transform);
                 auto parentScreenPos = WorldToScreen(parentPos);
 
                 drawList->AddLine(ImVec2(parentScreenPos.x, parentScreenPos.y), ImVec2(screenPos.x, screenPos.y), ImColor(0.0f, 0.0f, 1.0f));
