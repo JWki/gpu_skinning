@@ -1061,7 +1061,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
     }
 
-    ImGui::ShowTestWindow();
+    //ImGui::ShowTestWindow();
 
     static bool tPose = false;
     static bool showSkeleton = true;
@@ -1073,19 +1073,19 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     }
 
     {   // override local poses here
-        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "LeftArm");
+        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "LeftShoulder");
         for (auto i = shoulder; i == shoulder; ++i) {
             auto& joint = g_data.testSkeleton.joints[i];
             
+            static float rotAngle = 0.0f;
+            ImGui::DragFloat("Rotation", &rotAngle, 0.1f);
+
             float r[16];
             float t[16];
-            math::Make4x4FloatMatrixIdentity(t);
-            if (joint.parent != -1) {
-                auto& parent = g_data.testSkeleton.joints[joint.parent];
-               // auto translation = 
-            }
-            math::Make4x4FloatRotationMatrixCMLH(r, math::Vec3(0.0f, 1.0f, 0.0f), math::DegreesToRadians(25.0f));
-            math::Copy4x4FloatMatrixCM(r, joint.localTransform);
+            auto translation = math::Get4x4FloatMatrixColumnCM(joint.localTransform, 3).xyz;
+            math::Make4x4FloatTranslationMatrixCM(t, translation);
+            math::Make4x4FloatRotationMatrixCMLH(r, math::Vec3(0.0f, 1.0f, 0.0f), math::DegreesToRadians(rotAngle));
+            math::MultiplyMatricesCM(t, r, joint.localTransform);
         }
 
         static math::Vec3 objectPosition;
@@ -1184,9 +1184,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             boneHead = math::TransformPositionCM(boneHead, g_data.objectData.transform);
             auto screenPos = WorldToScreen(boneHead);
 
-            auto boneU = math::TransformPositionCM(math::Vec3(1.0f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 1.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 1.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneU = math::TransformPositionCM(math::Vec3(10.0f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 10.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 10.0f), g_data.testSkeleton.joints[i].globalTransform);
 
             boneU = math::TransformPositionCM(boneU, g_data.objectData.transform);
             boneV = math::TransformPositionCM(boneV, g_data.objectData.transform);
