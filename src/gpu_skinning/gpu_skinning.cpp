@@ -617,10 +617,11 @@ void TransformHierarchy(Skeleton* skeleton)
 
 void GetSkinningTransforms(Skeleton* skeleton, SkeletonConstantData* outBuffer)
 {
-    for (auto i = 0; i < MAX_NUM_BONES; ++i) 
+    for (auto i = 0u; i < MAX_NUM_BONES && i < skeleton->numJoints; ++i) 
     {
         auto idx = skeleton->joints[i].importId;
         math::MultiplyMatricesCM(skeleton->joints[i].globalTransform, skeleton->invBindpose[i], outBuffer->boneTransform[idx]);
+
         //math::Copy4x4FloatMatrixCM(skeleton->joints[i].globalTransform, outBuffer->boneTransform[idx]);
        // math::Make4x4FloatMatrixIdentity(outBuffer->boneTransform[idx]);
     }
@@ -1286,6 +1287,7 @@ void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         deviceContext->VSSetConstantBuffers(0, 3, cbuffers);
 
         deviceContext->DrawIndexed(g_data.testMesh.numElements, 0, 0);
+
     }
 }
 
