@@ -1045,9 +1045,10 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     static bool animate = true;
     static bool rootMotion = false;
     static bool sequence = true;
-    bool loop = true;
+    static bool loop = true;
     auto speed = (60.0f) * ImGui::GetIO().DeltaTime;
     bool didLoop = false;   // for root motion 
+    static bool didSwitchAnimation = false;
     g_data.animState.animationTime += animate ? animSpeedMod * speed : 0.0f;
     if (g_data.animState.animationTime > g_data.animState.currentAnim->duration && loop) {
         g_data.animState.animationTime -= g_data.animState.currentAnim->duration;
@@ -1060,6 +1061,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     if (didLoop && sequence) {
         g_data.currentAnim = (g_data.currentAnim + 1) % 4;
         g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
+        didSwitchAnimation = true;
     }
 
     //ImGui::ShowTestWindow();
@@ -1093,26 +1095,34 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         if(rootMotion)
         {   // root motion
             auto& rootJoint = g_data.testSkeleton.joints[0];
-            static math::Vec3 rootMotionCache = math::Get4x4FloatMatrixColumnCM(rootJoint.bindpose, 3).xyz;
-            math::Vec3 bindposeTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.bindpose, 3).xyz;
-            if (didLoop) {  // 
-                rootMotionCache = bindposeTranslation;
-                if (animSpeedMod < 0.0f) {
-                    auto numKeyframes = g_data.animState.currentAnim->tracks[0].numKeyframes;
-                    auto lastKeyframe = g_data.animState.currentAnim->tracks[0].keyframes[numKeyframes - 1];
-                    rootMotionCache = lastKeyframe.jointTransform.position;
-                }
+            auto numKeyframes = g_data.animState.currentAnim->tracks[0].numKeyframes;
+            auto& firstKeyframe = g_data.animState.currentAnim->tracks[0].keyframes[0];
+            static auto initialPosition = firstKeyframe.jointTransform.position;
+            static auto sourcePosition = initialPosition;
+            if (didSwitchAnimation) {
+                initialPosition = firstKeyframe.jointTransform.position;
+                didSwitchAnimation = false;
             }
-
-            auto rootMotionTranslation = math::Get4x4FloatMatrixColumnCM(rootJoint.localTransform, 3).xyz;
-            objectPosition += rootMotionTranslation - rootMotionCache;
-            math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
-            rootMotionCache = rootMotionTranslation;
-            math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, bindposeTranslation);
+            if (didLoop) {
+                sourcePosition = initialPosition;
+            }
+            auto currentPosition = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[0].localTransform, 3).xyz;
+            auto dist = currentPosition - sourcePosition;
+            math::SetTranslation4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, initialPosition);
+            sourcePosition = currentPosition;
+            dist.x = 0.0f;
+            dist.z = 0.0f;
+            objectPosition += dist;
         } else {
             objectPosition = math::Vec3();
         }
+        math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
+        ImGui::Text("x = %f", objectPosition.x);
+        ImGui::Text("y = %f", objectPosition.y);
+        ImGui::Text("z = %f", objectPosition.z);
+
     }
+
 
 
     if (transformHierarchy) {
@@ -1128,6 +1138,11 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ///
     //
     static int selectedJoint = -1;
+    if (selectedJoint != -1) {
+        ImGui::PlotLines("Y Pos Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.position.y;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr);
+    }
     if (ImGui::Begin("Skeleton")) {
         ImGui::Checkbox("T-Pose", &tPose);
         ImGui::Checkbox("Show Skeleton", &showSkeleton);
@@ -1143,6 +1158,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
                 if (ImGui::Selectable(animFiles[i], i == g_data.currentAnim)) {
                     g_data.currentAnim = i;
                     g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
+                    didSwitchAnimation = true;
                 }
             }
             ImGui::EndCombo();
@@ -1155,11 +1171,21 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             }
         }
     } ImGui::End();
+   
 
-    auto canvasFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
+    auto canvasFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     if (ImGui::Begin("#canvas", nullptr, ImVec2(), 0.0f, canvasFlags)) {
+
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseDragging(1)) {
+            xRot -= ImGui::GetMouseDragDelta(1).y * 0.1f;
+            yRot -= ImGui::GetMouseDragDelta(1).x * 0.1f;
+
+            ImGui::ResetMouseDragDelta(1);
+        }
+        
+
 
         auto WorldToScreen = [&](const math::Vec3& pos) -> math::Vec3 {
             auto clipPos = math::TransformPositionCM(math::Vec4(pos, 1.0f), g_data.frameData.cameraProjection);
