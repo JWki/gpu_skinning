@@ -573,11 +573,11 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
         JointTransform poseTransform;
         float alpha = (time - prevKeyframe->timeStamp) / (nextKeyframe->timeStamp - prevKeyframe->timeStamp);
 
-        //if (didLoop) {
-        //    // the previous keyframe will be the last keyframe in the track
-        //    prevKeyframe = &anim.tracks[i].keyframes[anim.tracks[i].numKeyframes - 1]; // @NOTE this is a bit hacky tho
-        //    alpha = time;
-        //}
+        if (didLoop) {
+            // the previous keyframe will be the last keyframe in the track
+            prevKeyframe = &anim.tracks[i].keyframes[anim.tracks[i].numKeyframes - 1]; // @NOTE this is a bit hacky tho
+            alpha = time;
+        }
 
         if (prevKeyframe == nextKeyframe) {
             poseTransform = prevKeyframe->jointTransform;
@@ -790,95 +790,8 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
     return true;
 }
 
-bool ImportGTMesh(const char* path, Mesh* outMesh, ID3D11Device* device)
-{
-    uint32_t fileSize;
-    ByteStream stream;
-    stream.buffer = (char*)Win32LoadFileContents(path, &fileSize);
-    stream.bufferSize = (size_t)(fileSize);
-    stream.offset = 0;
 
-    uint32_t numVerticesTotal = 0;
-    uint32_t numIndicesTotal = 0;
-
-    uint32_t numSubmeshes = stream.Read<uint32_t>();
-    MeshDesc* submeshDesc = new MeshDesc[numSubmeshes];
-    for (auto i = 0u; i < numSubmeshes; ++i) {
-        auto& meshResource = submeshDesc[i];
-        stream.Read<uint32_t>();
-
-        meshResource.numVertices = stream.Read<uint32_t>();
-        numVerticesTotal += meshResource.numVertices;
-        meshResource.vertices = new Vertex[meshResource.numVertices];
-        for (auto j = 0u; j < meshResource.numVertices; ++j) {
-            auto& vertex = meshResource.vertices[j];
-            vertex.position.x = stream.Read<float>();
-            vertex.position.y = stream.Read<float>();
-            vertex.position.z = stream.Read<float>();
-
-            vertex.normal.x = stream.Read<float>();
-            vertex.normal.y = stream.Read<float>();
-            vertex.normal.z = stream.Read<float>();
-
-            vertex.uv[0] = stream.Read<float>();
-            vertex.uv[1] = 1.0f - stream.Read<float>();
-
-            vertex.blendWeights[0] = stream.Read<float>();
-            vertex.blendWeights[1] = stream.Read<float>();
-            vertex.blendWeights[2] = stream.Read<float>();
-            vertex.blendWeights[3] = stream.Read<float>();
-
-            vertex.blendIndices[0] = stream.Read<uint32_t>();
-            vertex.blendIndices[1] = stream.Read<uint32_t>();
-            vertex.blendIndices[2] = stream.Read<uint32_t>();
-            vertex.blendIndices[3] = stream.Read<uint32_t>();
-
-        }
-        meshResource.numIndices = stream.Read<uint32_t>();
-        numIndicesTotal += meshResource.numIndices;
-        meshResource.indices = new IndexType[meshResource.numIndices];
-        for (auto j = 0u; j < meshResource.numIndices; ++j) {
-            meshResource.indices[j] = stream.Read<IndexType>();
-        }
-        /*IndexType* it = meshResource.indices;
-        for (auto i = 0u; i < (meshResource.numIndices / 3); ++i) {
-            auto swap = it[0];
-            it[0] = it[2];
-            it[2] = swap;
-            it += 3;
-        }*/
-    }
-
-    MeshDesc meshDesc;
-    meshDesc.numVertices = numVerticesTotal;
-    meshDesc.numIndices = numIndicesTotal;
-
-    meshDesc.vertices = new Vertex[numVerticesTotal];
-    meshDesc.indices = new IndexType[numIndicesTotal];
-
-    Vertex* writeVertexPtr = meshDesc.vertices;
-    IndexType* writeIndexPtr = meshDesc.indices;
-    IndexType indexOffset = 0;
-
-    for (auto i = 0u; i < numSubmeshes; ++i) {
-        auto& submesh = submeshDesc[i];
-        memcpy(writeVertexPtr, submesh.vertices, sizeof(Vertex) * submesh.numVertices);
-        writeVertexPtr += submesh.numVertices;
-        memcpy(writeIndexPtr, submesh.indices, sizeof(IndexType) * submesh.numIndices);
-        for (auto j = 0u; j < submesh.numIndices; ++j) {
-            writeIndexPtr[j] += indexOffset;
-        }
-        writeIndexPtr += submesh.numIndices;
-        indexOffset += submesh.numVertices;
-    }
-
-    auto res = CreateMesh(device, &meshDesc, outMesh);
-    delete[] submeshDesc;
-    return res;
-}
-
-
-const char* animFiles[] = { "assets/idle.sga", "assets/walking.sga", "assets/vaulting.sga", "assets/running.sga" };
+const char* animFiles[] = { "assets/boxing.sga", "assets/jumpDown.sga", "assets/boxing.sga", "assets/jumpDown.sga" };
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
@@ -923,13 +836,13 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         printf("Created test mesh\n");
     }
     */
-    if (!ImportSGM("assets/character.sgm", &g_data.testMesh, device)) {
+    if (!ImportSGM("assets/doug.sgm", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
     printf("Created test mesh\n");
 
-    if (!ImportSkeletonFromSGA("assets/character.sga", &g_data.testSkeleton)) {
+    if (!ImportSkeletonFromSGA("assets/doug.sga", &g_data.testSkeleton)) {
         printf("failed to load test skeleton from %s\n", "assets/character.sga");
         return;
     }
@@ -1076,19 +989,36 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     }
 
     {   // override local poses here
-        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "LeftShoulder");
+        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "mixamorig:Head");
         for (auto i = shoulder; i == shoulder; ++i) {
-            auto& joint = g_data.testSkeleton.joints[i];
+            auto joint = &g_data.testSkeleton.joints[i];
             
             static float rotAngle = 0.0f;
             ImGui::DragFloat("Rotation", &rotAngle, 0.1f);
 
-            float r[16];
-            float t[16];
-            auto translation = math::Get4x4FloatMatrixColumnCM(joint.localTransform, 3).xyz;
-            math::Make4x4FloatTranslationMatrixCM(t, translation);
-            math::Make4x4FloatRotationMatrixCMLH(r, math::Vec3(0.0f, 1.0f, 0.0f), math::DegreesToRadians(rotAngle));
-            math::MultiplyMatricesCM(t, r, joint.localTransform);
+            float rotToApplyTotal = math::Abs(rotAngle);
+            float sign = rotAngle >= 0.0f ? 1.0f : -1.0f;
+            while (rotToApplyTotal > 0.0f && joint != nullptr) {
+                if (joint->parent == -1) { break; }
+                float r[16];
+                float t[16];
+                auto translation = math::Get4x4FloatMatrixColumnCM(joint->localTransform, 3).xyz;
+                math::Set4x4FloatMatrixColumnCM(joint->localTransform, 3, math::Vec4(0.0f, 0.0f, 0.0f, 1.0f));
+                math::Make4x4FloatTranslationMatrixCM(t, translation);
+
+                static const float threshold = 45.0f;
+                float rotToApply = math::Clamp(rotToApplyTotal, 0.0f, threshold);
+                auto axis = joint->parent != -1 ? math::Vec3(0.0f, 0.0f, 1.0f) : math::Vec3(0.0f, 1.0f, 0.0f);
+                math::Make4x4FloatRotationMatrixCMLH(r, axis, math::DegreesToRadians(rotToApply * sign));
+                float rr[16];
+                math::MultiplyMatricesCM(r, joint->localTransform, rr);
+                math::MultiplyMatricesCM(t, rr, joint->localTransform);
+
+                rotToApplyTotal = rotToApplyTotal - rotToApply;
+                if (joint->parent != -1) {
+                    joint = &g_data.testSkeleton.joints[joint->parent];
+                }
+            }
         }
 
         static math::Vec3 objectPosition;
@@ -1106,12 +1036,12 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             if (didLoop) {
                 sourcePosition = initialPosition;
             }
-            auto currentPosition = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[0].localTransform, 3).xyz;
+            auto currentPosition = math::Get4x4FloatMatrixColumnCM(rootJoint.localTransform, 3).xyz;
             auto dist = currentPosition - sourcePosition;
-            math::SetTranslation4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, initialPosition);
+            math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, initialPosition);
             sourcePosition = currentPosition;
-            dist.x = 0.0f;
-            dist.z = 0.0f;
+            //dist.x = 0.0f;
+            //dist.z = 0.0f;
             objectPosition += dist;
         } else {
             objectPosition = math::Vec3();
