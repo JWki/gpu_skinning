@@ -38,6 +38,8 @@ VS_SurfaceOutput main(Vertex vertex)
         worldNormal += mul(BoneTransform[vertex.blendIndices[i]], float4(vertex.normal, 0.0f)) * vertex.blendWeights[i];
     }
     output.worldPos = mul(Transform, output.worldPos);
+    //output.worldPos = mul(Transform, float4(vertex.position, 1.0f));
+    //worldNormal = mul(Transform, float4(vertex.normal, 0.0f));
     //output.worldPos.w = 1.0f;
     output.pos = mul(CameraProjection, output.worldPos);
     output.normal = normalize(mul(Transform, worldNormal));

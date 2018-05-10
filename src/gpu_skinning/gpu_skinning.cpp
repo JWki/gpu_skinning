@@ -245,7 +245,7 @@ struct Skeleton
 {
     float bindpose[MAX_NUM_BONES][16];      // global space bindposes
     float invBindpose[MAX_NUM_BONES][16];   // global space inverse bindposes
-    const char* nameTable[MAX_NUM_BONES];   // contains human readable names of joints
+    char* nameTable[MAX_NUM_BONES];   // contains human readable names of joints
     Joint joints[MAX_NUM_BONES];            // actual joints
     uint32_t numJoints;
 };
@@ -425,6 +425,64 @@ bool ImportSkeletonFromSGA(const char* path, Skeleton* outSkeleton)
     stream.offset = 0;
 
     return ImportSkeletonFromMemory(stream, outSkeleton);
+}
+
+
+bool ImportGTSkeleton(const char* path, Skeleton* outSkeleton)
+{
+    uint32_t fileSize;
+    ByteStream stream;
+    stream.buffer = (char*)Win32LoadFileContents(path, &fileSize);
+    stream.bufferSize = (size_t)(fileSize);
+    stream.offset = 0;
+
+    auto magicNumber = stream.Read<uint32_t>();
+    assert(magicNumber == 0xdeadbeef);
+
+    auto version = stream.Read<uint32_t>();
+    assert(version == 1);
+
+    Skeleton tempSkeleton;
+    char* buf = new char[MAX_NUM_BONES * 512];
+    memset(buf, 0x0, MAX_NUM_BONES * 512);
+    uint32_t bufOffset = 0;
+
+    tempSkeleton.numJoints = stream.Read<uint32_t>();
+    for (uint32_t i = 0; i < tempSkeleton.numJoints; ++i) {
+        uint32_t nameLen = stream.Read<uint32_t>();
+        stream.ReadBytes(buf + bufOffset, nameLen);
+        tempSkeleton.nameTable[i] = buf + bufOffset;
+        bufOffset += nameLen + 1;
+
+        float bindpose[16];
+        stream.ReadBytes(bindpose, sizeof(float) * 16);
+        math::Copy4x4FloatMatrixCM(bindpose, tempSkeleton.bindpose[i]);
+        
+        tempSkeleton.joints[i].importId = i;
+        tempSkeleton.joints[i].parent = stream.Read<int32_t>();
+
+    }
+    for (uint32_t i = 0; i < tempSkeleton.numJoints; ++i) {
+    }
+    SortSkeleton(&tempSkeleton, outSkeleton);
+    outSkeleton->numJoints = tempSkeleton.numJoints;
+    for (int i = 0; i < (int)outSkeleton->numJoints; ++i) {
+        assert(outSkeleton->joints[i].parent < i);
+    }
+    // compute inverse bind transforms as well as global space bind and inverse bind transform for each bone, make joint transforms local to parent
+    for (int i = 0; i < (int)outSkeleton->numJoints; ++i) {
+        auto& joint = outSkeleton->joints[i];
+        if (joint.parent == -1) {
+            math::Copy4x4FloatMatrixCM(outSkeleton->bindpose[i], joint.bindpose);
+        }
+        else {
+            math::MultiplyMatricesCM(outSkeleton->bindpose[i], outSkeleton->invBindpose[joint.parent], joint.bindpose);
+        }
+        math::Inverse4x4FloatMatrixCM(outSkeleton->bindpose[i], outSkeleton->invBindpose[i]);
+        math::Inverse4x4FloatMatrixCM(joint.bindpose, joint.invBindpose);
+    }
+
+    return true;
 }
 ///
 
@@ -651,6 +709,70 @@ struct AppData
 } g_data;
 
 
+bool ImportGTMesh(const char* path, Mesh* outMesh, ID3D11Device* device)
+{
+    uint32_t fileSize;
+    ByteStream stream;
+    stream.buffer = (char*)Win32LoadFileContents(path, &fileSize);
+    stream.bufferSize = (size_t)(fileSize);
+    stream.offset = 0;
+
+    auto magicNumber = stream.Read<uint32_t>();
+    assert(magicNumber == 0xdeadbeef);
+
+    auto version = stream.Read<uint32_t>();
+    assert(version == 1);
+
+    MeshDesc meshDesc;
+    meshDesc.numVertices = stream.Read<uint32_t>();
+    meshDesc.vertices = new Vertex[meshDesc.numVertices];
+    for (uint32_t i = 0; i < meshDesc.numVertices; ++i) {
+        auto& vert = meshDesc.vertices[i];
+
+        vert.position = stream.Read<math::Vec3>();
+        vert.normal = stream.Read<math::Vec3>();
+        stream.ReadBytes(vert.uv, sizeof(float) * 2);
+        stream.ReadBytes(nullptr, sizeof(float) * 2);   // @NOTE ignore second UV set
+        vert.tangent = stream.Read<math::Vec4>();
+        stream.ReadBytes(vert.blendWeights, sizeof(float) * 4);
+        stream.ReadBytes(vert.blendIndices, sizeof(uint32_t) * 4);
+    }
+
+    auto indexSize = stream.Read<uint32_t>();
+    auto numSubmeshes = stream.Read<uint32_t>();
+    uint32_t totalNumIndices = 0;
+
+    MeshDesc* submeshDesc = new MeshDesc[numSubmeshes];
+    for (uint32_t i = 0; i < numSubmeshes; ++i) {
+        auto& desc = submeshDesc[i];
+        desc.numIndices = stream.Read<uint32_t>();
+        desc.indices = new IndexType[desc.numIndices];
+        for (uint32_t idx = 0; idx < desc.numIndices; ++idx) {
+            if (indexSize == 2) {
+                desc.indices[idx] = (IndexType)stream.Read<uint16_t>();
+            }
+            else {
+                desc.indices[idx] = (IndexType)stream.Read<uint32_t>();
+            }
+        }
+        totalNumIndices += desc.numIndices;
+    }
+    meshDesc.numIndices = totalNumIndices;
+    meshDesc.indices = new IndexType[totalNumIndices];
+    IndexType* writePtr = meshDesc.indices;
+    for (uint32_t i = 0; i < numSubmeshes; ++i) {
+        memcpy(writePtr, submeshDesc[i].indices, submeshDesc[i].numIndices * sizeof(IndexType));
+        delete[] submeshDesc[i].indices;
+        writePtr += submeshDesc[i].numIndices;
+    }
+    delete[] submeshDesc;
+
+    auto success = CreateMesh(device, &meshDesc, outMesh);
+    delete[] meshDesc.vertices;
+    delete[] meshDesc.indices;
+    return success;
+}
+
 
 bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 {
@@ -836,13 +958,17 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         printf("Created test mesh\n");
     }
     */
-    if (!ImportSGM("assets/doug.sgm", &g_data.testMesh, device)) {
+    /*if (!ImportSGM("assets/doug.sgm", &g_data.testMesh, device)) {
+       printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
+        return;
+    }*/
+    if(!ImportGTMesh("assets/akai.gtmesh", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
     printf("Created test mesh\n");
 
-    if (!ImportSkeletonFromSGA("assets/doug.sga", &g_data.testSkeleton)) {
+    if (!ImportGTSkeleton("assets/akai.gtskel", &g_data.testSkeleton)) {
         printf("failed to load test skeleton from %s\n", "assets/character.sga");
         return;
     }
@@ -989,7 +1115,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     }
 
     {   // override local poses here
-        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "mixamorig:Head");
+        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "Head");
         for (auto i = shoulder; i == shoulder; ++i) {
             auto joint = &g_data.testSkeleton.joints[i];
             
@@ -1006,9 +1132,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
                 math::Set4x4FloatMatrixColumnCM(joint->localTransform, 3, math::Vec4(0.0f, 0.0f, 0.0f, 1.0f));
                 math::Make4x4FloatTranslationMatrixCM(t, translation);
 
-                static const float threshold = 45.0f;
+                static const float threshold = 16.0f;
                 float rotToApply = math::Clamp(rotToApplyTotal, 0.0f, threshold);
-                auto axis = joint->parent != -1 ? math::Vec3(0.0f, 0.0f, 1.0f) : math::Vec3(0.0f, 1.0f, 0.0f);
+                auto axis = joint->parent != -1 ? math::Vec3(0.0f, 1.0f, 0.0f) : math::Vec3(0.0f, 1.0f, 0.0f);
                 math::Make4x4FloatRotationMatrixCMLH(r, axis, math::DegreesToRadians(rotToApply * sign));
                 float rr[16];
                 math::MultiplyMatricesCM(r, joint->localTransform, rr);
@@ -1096,9 +1222,11 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
         for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) {
             auto& joint = g_data.testSkeleton.joints[i];
+            ImGui::PushID(i);
             if (ImGui::Selectable(g_data.testSkeleton.nameTable[i], selectedJoint == i)) {
                 selectedJoint = i;
             }
+            ImGui::PopID();
         }
     } ImGui::End();
    
@@ -1141,9 +1269,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             boneHead = math::TransformPositionCM(boneHead, g_data.objectData.transform);
             auto screenPos = WorldToScreen(boneHead);
 
-            auto boneU = math::TransformPositionCM(math::Vec3(10.0f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 10.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 10.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneU = math::TransformPositionCM(math::Vec3(0.1f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 0.1f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 0.1f), g_data.testSkeleton.joints[i].globalTransform);
 
             boneU = math::TransformPositionCM(boneU, g_data.objectData.transform);
             boneV = math::TransformPositionCM(boneV, g_data.objectData.transform);
