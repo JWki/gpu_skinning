@@ -100,6 +100,7 @@ public class GTSkeletonExporter : ScriptableObject
                             break;
                         }
                     }
+                    if(parentIndex == -1) Debug.Log("Incomplete hierarchy!");
                     writer.Write((Int32)parentIndex);
                 }
             }

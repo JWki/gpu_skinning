@@ -250,20 +250,24 @@ struct Skeleton
     uint32_t numJoints;
 };
 
-void TransferNode(Skeleton* source, Skeleton* target, uint32_t& writeOffset, int nodeIdx)
+uint32_t TransferNode(Skeleton* source, Skeleton* target, uint32_t& writeOffset, int nodeIdx)
 {
     if (source->joints[nodeIdx].importId == -1) {
-        return;
+        for (uint32_t i = 0; i < target->numJoints; ++i) {
+            if (target->joints[i].importId == nodeIdx) { return i; }
+        }
     }
     if (source->joints[nodeIdx].parent != -1) {
-        TransferNode(source, target, writeOffset, source->joints[nodeIdx].parent);
+        source->joints[nodeIdx].parent = TransferNode(source, target, writeOffset, source->joints[nodeIdx].parent);
     }
+    target->numJoints++;
     target->joints[writeOffset] = source->joints[nodeIdx];
     target->nameTable[writeOffset] = source->nameTable[nodeIdx];
     memcpy(target->bindpose[writeOffset], source->bindpose[nodeIdx], sizeof(float) * 16);
     memcpy(target->invBindpose[writeOffset], source->invBindpose[nodeIdx], sizeof(float) * 16);
     writeOffset++;
     source->joints[nodeIdx].importId = -1;
+    return writeOffset - 1;
 }
 
 void SortSkeleton(Skeleton* source, Skeleton* target)
@@ -460,12 +464,9 @@ bool ImportGTSkeleton(const char* path, Skeleton* outSkeleton)
         
         tempSkeleton.joints[i].importId = i;
         tempSkeleton.joints[i].parent = stream.Read<int32_t>();
-
     }
-    for (uint32_t i = 0; i < tempSkeleton.numJoints; ++i) {
-    }
+    
     SortSkeleton(&tempSkeleton, outSkeleton);
-    outSkeleton->numJoints = tempSkeleton.numJoints;
     for (int i = 0; i < (int)outSkeleton->numJoints; ++i) {
         assert(outSkeleton->joints[i].parent < i);
     }
@@ -476,7 +477,7 @@ bool ImportGTSkeleton(const char* path, Skeleton* outSkeleton)
             math::Copy4x4FloatMatrixCM(outSkeleton->bindpose[i], joint.bindpose);
         }
         else {
-            math::MultiplyMatricesCM(outSkeleton->bindpose[i], outSkeleton->invBindpose[joint.parent], joint.bindpose);
+            math::MultiplyMatricesCM(outSkeleton->invBindpose[joint.parent], outSkeleton->bindpose[i], joint.bindpose);
         }
         math::Inverse4x4FloatMatrixCM(outSkeleton->bindpose[i], outSkeleton->invBindpose[i]);
         math::Inverse4x4FloatMatrixCM(joint.bindpose, joint.invBindpose);
@@ -962,13 +963,13 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
        printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }*/
-    if(!ImportGTMesh("assets/akai.gtmesh", &g_data.testMesh, device)) {
+    if(!ImportGTMesh("assets/doug.gtmesh", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
     printf("Created test mesh\n");
 
-    if (!ImportGTSkeleton("assets/akai.gtskel", &g_data.testSkeleton)) {
+    if (!ImportGTSkeleton("assets/doug.gtskel", &g_data.testSkeleton)) {
         printf("failed to load test skeleton from %s\n", "assets/character.sga");
         return;
     }
@@ -1198,6 +1199,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::PlotLines("Y Pos Curve", [](void* data, int idx) -> float {
             return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.position.y;
         }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr);
+        ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
     }
     if (ImGui::Begin("Skeleton")) {
         ImGui::Checkbox("T-Pose", &tPose);
@@ -1220,8 +1222,12 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             ImGui::EndCombo();
         }
 
+        static bool* isDisplayed = nullptr;
+        if (isDisplayed == nullptr) {
+            isDisplayed = new bool[g_data.testSkeleton.numJoints];
+        }
+        for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) { isDisplayed[i] = false; }
         for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) {
-            auto& joint = g_data.testSkeleton.joints[i];
             ImGui::PushID(i);
             if (ImGui::Selectable(g_data.testSkeleton.nameTable[i], selectedJoint == i)) {
                 selectedJoint = i;
