@@ -509,6 +509,7 @@ struct BoneTrack
 struct Animation
 {
     char*       name  = "";
+    uint32_t    numTracks = 0;
     BoneTrack   tracks[MAX_NUM_BONES];
     float       duration = 0.0f;
 };
@@ -587,6 +588,56 @@ bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animatio
     return true;
 }
 
+
+//
+bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, Animation* outAnimation)
+{
+    uint32_t fileSize;
+    ByteStream stream;
+    stream.buffer = (char*)Win32LoadFileContents(path, &fileSize);
+    stream.bufferSize = (size_t)(fileSize);
+    stream.offset = 0;
+
+    auto magicNumber = stream.Read<uint32_t>();
+    assert(magicNumber == 0xdeadbeef);
+
+    auto version = stream.Read<uint32_t>();
+    assert(version == 1);
+
+
+    Animation& anim = *outAnimation;
+    auto nameLen = stream.Read<uint32_t>();
+    anim.name = (char*)malloc(nameLen + 1);
+    memset(anim.name, 0x0, nameLen + 1);
+    stream.ReadBytes(anim.name, nameLen);
+    auto numAffectedBones = stream.Read<uint32_t>();
+    anim.numTracks = numAffectedBones;
+    float biggestTimestamp = 0.0f;
+    for (uint32_t j = 0; j < numAffectedBones; ++j) {
+        auto importId = stream.Read<uint32_t>();
+        auto id = GetBoneWithImportId(targetSkeleton, importId);
+        auto& track = anim.tracks[id];
+        track.numKeyframes = stream.Read<uint32_t>();
+        //assert(track.numKeyframes != 0);
+        track.keyframes = new KeyFrame[track.numKeyframes];
+        printf("Bone: %s\n", targetSkeleton->nameTable[id]);
+        for (uint32_t k = 0; k < track.numKeyframes; ++k) {
+            auto& frame = track.keyframes[k];
+            frame.timeStamp = stream.Read<float>();
+            if (frame.timeStamp > biggestTimestamp) { biggestTimestamp = frame.timeStamp; }
+            frame.jointTransform.position = stream.Read<math::Vec3>();
+            frame.jointTransform.scale = math::Vec3(1.0f, 1.0f, 1.0f);   // 
+            frame.jointTransform.rotation = stream.Read<math::Vec4>();  // rotation as a 4-component quaternion
+            printf("Pos = (%f, %f, %f)\n", frame.jointTransform.position.x, frame.jointTransform.position.y, frame.jointTransform.position.z);
+            printf("Scale = (%f, %f, %f)\n", frame.jointTransform.scale.x, frame.jointTransform.scale.y, frame.jointTransform.scale.z);
+            printf("Rot = (%f, %f, %f, %f)\n", frame.jointTransform.rotation.x, frame.jointTransform.rotation.y, frame.jointTransform.rotation.z, frame.jointTransform.rotation.w);
+        }
+    }
+    anim.duration = biggestTimestamp;
+     
+    return true;
+}
+
 ///
 /**
     ASSUMPTIONS/RULES:
@@ -619,6 +670,7 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
     // @NOTE we assume that the skeleton is sorted so parents are always evaluated before their children
     // and also local transforms have been reset at least once so there's no BS in them and we can do this in a single loop
     for (uint32_t i = 0; i < skeleton->numJoints; ++i) {
+        if (anim.tracks[i].numKeyframes == 0) continue;
         KeyFrame* prevKeyframe = anim.tracks[i].keyframes;
         KeyFrame* nextKeyframe = anim.tracks[i].keyframes;
         for (uint32_t k = 0; k < anim.tracks[i].numKeyframes; ++k) {
@@ -657,11 +709,31 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
         scale[10] = poseTransform.scale.z;
         math::MultiplyMatricesCM(transl, scale, translScale);
         math::MultiplyMatricesCM(translScale, rot, skeleton->joints[i].localTransform);
+
     }
     //
 }
 
-void TransformHierarchy(Skeleton* skeleton)
+struct PoseModifier
+{
+    enum {
+        ADDITIVE_ROTATION_GLOBAL_AXIS
+    } type;
+
+    math::Vec3 axis;
+    float value = 0;
+};
+
+#define MAX_NUM_MODS 8
+struct PoseModifierStack
+{
+    PoseModifier mod[MAX_NUM_BONES][MAX_NUM_MODS];
+
+    uint8_t numMods[MAX_NUM_BONES] = { 0 };
+};
+
+
+void TransformHierarchy(Skeleton* skeleton, PoseModifierStack* modifierStack)
 {
     for (auto i = 0u; i < skeleton->numJoints; ++i) {
         if (skeleton->joints[i].parent != -1) {
@@ -670,6 +742,23 @@ void TransformHierarchy(Skeleton* skeleton)
         }
         else {
             math::Copy4x4FloatMatrixCM(skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
+        }
+
+        for (auto j = 0u; j < modifierStack->numMods[i]; ++j) {
+            auto& mod = modifierStack->mod[i][j];
+            switch (mod.type) {
+                case PoseModifier::ADDITIVE_ROTATION_GLOBAL_AXIS:
+                    float t[16];
+                    float r[16];
+
+                    auto translation = math::Get4x4FloatMatrixColumnCM(skeleton->joints[i].globalTransform, 3).xyz;
+                    math::Set4x4FloatMatrixColumnCM(skeleton->joints[i].globalTransform, 3, math::Vec4(0.0f, 0.0f, 0.0f, 1.0f));
+
+                    math::Make4x4FloatTranslationMatrixCM(t, translation);
+                    math::Make4x4FloatRotationMatrixCMLH(r, mod.axis, mod.value);
+                    math::MultiplyMatricesCM(t, r, skeleton->joints[i].globalTransform);
+                    break;
+            }
         }
     }
 }
@@ -914,7 +1003,7 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 }
 
 
-const char* animFiles[] = { "assets/boxing.sga", "assets/jumpDown.sga", "assets/boxing.sga", "assets/jumpDown.sga" };
+const char* animFiles[] = { "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip" };
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
@@ -963,13 +1052,13 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
        printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }*/
-    if(!ImportGTMesh("assets/doug.gtmesh", &g_data.testMesh, device)) {
+    if(!ImportGTMesh("assets/akai.gtmesh", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
     printf("Created test mesh\n");
 
-    if (!ImportGTSkeleton("assets/doug.gtskel", &g_data.testSkeleton)) {
+    if (!ImportGTSkeleton("assets/akai.gtskel", &g_data.testSkeleton)) {
         printf("failed to load test skeleton from %s\n", "assets/character.sga");
         return;
     }
@@ -980,13 +1069,10 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     uint32_t currentImportAnimation = 0;
     
     for (uint32_t i = 0; i < 4; ++i) {
-        if (!ImportAnimationFromSGA(animFiles[i], &g_data.testSkeleton, nullptr, &numAnimations) || numAnimations > 1) {
-            printf("failed to load a single animation from %s\n", animFiles[i]);
-            return;
-        }
-        if (!ImportAnimationFromSGA(animFiles[i], &g_data.testSkeleton, &g_data.testAnim[currentImportAnimation], &numAnimations)) {
+        if (!ImportGTAnimation(animFiles[i], &g_data.testSkeleton, &g_data.testAnim[currentImportAnimation])) {
             printf("failed to load animation from %s\n", animFiles[i]);
             return;
+
         }
         printf("loaded anim: %s\n", g_data.testAnim[currentImportAnimation].name);
         currentImportAnimation++;
@@ -1086,7 +1172,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     static bool rootMotion = false;
     static bool sequence = true;
     static bool loop = true;
-    auto speed = (60.0f) * ImGui::GetIO().DeltaTime;
+    auto speed = (1.0f) * ImGui::GetIO().DeltaTime;
     bool didLoop = false;   // for root motion 
     static bool didSwitchAnimation = false;
     g_data.animState.animationTime += animate ? animSpeedMod * speed : 0.0f;
@@ -1106,6 +1192,8 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
     //ImGui::ShowTestWindow();
 
+    PoseModifierStack modStack;
+
     static bool tPose = false;
     static bool showSkeleton = true;
     static bool transformHierarchy = true;
@@ -1116,7 +1204,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     }
 
     {   // override local poses here
-        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "Head");
+        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "mixamorig:RightLeg");
         for (auto i = shoulder; i == shoulder; ++i) {
             auto joint = &g_data.testSkeleton.joints[i];
             
@@ -1139,7 +1227,12 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
                 math::Make4x4FloatRotationMatrixCMLH(r, axis, math::DegreesToRadians(rotToApply * sign));
                 float rr[16];
                 math::MultiplyMatricesCM(r, joint->localTransform, rr);
-                math::MultiplyMatricesCM(t, rr, joint->localTransform);
+               // math::MultiplyMatricesCM(t, rr, joint->localTransform);
+
+                modStack.mod[i][0].axis = math::Vec3(0.0f, 1.0f, 0.0f);
+                modStack.mod[i][0].value = math::DegreesToRadians(rotToApply * sign);
+                modStack.mod[i][0].type = PoseModifier::ADDITIVE_ROTATION_GLOBAL_AXIS;
+                modStack.numMods[0] = 1;
 
                 rotToApplyTotal = rotToApplyTotal - rotToApply;
                 if (joint->parent != -1) {
@@ -1183,7 +1276,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
 
     if (transformHierarchy) {
-        TransformHierarchy(&g_data.testSkeleton);
+        TransformHierarchy(&g_data.testSkeleton, &modStack);
     }
     else {
         for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) {
@@ -1211,13 +1304,15 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::Checkbox("Sequence", &sequence);
         ImGui::SliderFloat("Playback Speed Modifier", &animSpeedMod, -1.0f, 1.0f);
 
-        if (ImGui::BeginCombo("Animation Clip", animFiles[g_data.currentAnim])) {
+        if (ImGui::BeginCombo("Animation Clip", g_data.testAnim[g_data.currentAnim].name)) {
             for (uint32_t i = 0; i < 4; ++i) {
-                if (ImGui::Selectable(animFiles[i], i == g_data.currentAnim)) {
+                ImGui::PushID(i);
+                if (ImGui::Selectable(g_data.testAnim[i].name, i == g_data.currentAnim)) {
                     g_data.currentAnim = i;
                     g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
                     didSwitchAnimation = true;
                 }
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }
@@ -1275,9 +1370,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             boneHead = math::TransformPositionCM(boneHead, g_data.objectData.transform);
             auto screenPos = WorldToScreen(boneHead);
 
-            auto boneU = math::TransformPositionCM(math::Vec3(0.1f, 0.0f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 0.1f, 0.0f), g_data.testSkeleton.joints[i].globalTransform);
-            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 0.1f), g_data.testSkeleton.joints[i].globalTransform);
+            auto boneU = math::TransformPositionCM(math::Vec3(1.0f, 0.0f, 0.0f) * 0.1f, g_data.testSkeleton.joints[i].globalTransform);
+            auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 1.0f, 0.0f) * 0.1f, g_data.testSkeleton.joints[i].globalTransform);
+            auto boneW = math::TransformPositionCM(math::Vec3(0.0f, 0.0f, 1.0f) * 0.1f, g_data.testSkeleton.joints[i].globalTransform);
 
             boneU = math::TransformPositionCM(boneU, g_data.objectData.transform);
             boneV = math::TransformPositionCM(boneV, g_data.objectData.transform);
