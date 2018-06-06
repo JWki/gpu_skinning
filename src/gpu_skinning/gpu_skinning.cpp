@@ -620,7 +620,7 @@ bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, Animation* ou
         track.numKeyframes = stream.Read<uint32_t>();
         //assert(track.numKeyframes != 0);
         track.keyframes = new KeyFrame[track.numKeyframes];
-        printf("Bone: %s\n", targetSkeleton->nameTable[id]);
+        //printf("Bone: %s\n", targetSkeleton->nameTable[id]);
         for (uint32_t k = 0; k < track.numKeyframes; ++k) {
             auto& frame = track.keyframes[k];
             frame.timeStamp = stream.Read<float>();
@@ -628,9 +628,9 @@ bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, Animation* ou
             frame.jointTransform.position = stream.Read<math::Vec3>();
             frame.jointTransform.scale = math::Vec3(1.0f, 1.0f, 1.0f);   // 
             frame.jointTransform.rotation = stream.Read<math::Vec4>();  // rotation as a 4-component quaternion
-            printf("Pos = (%f, %f, %f)\n", frame.jointTransform.position.x, frame.jointTransform.position.y, frame.jointTransform.position.z);
-            printf("Scale = (%f, %f, %f)\n", frame.jointTransform.scale.x, frame.jointTransform.scale.y, frame.jointTransform.scale.z);
-            printf("Rot = (%f, %f, %f, %f)\n", frame.jointTransform.rotation.x, frame.jointTransform.rotation.y, frame.jointTransform.rotation.z, frame.jointTransform.rotation.w);
+            //printf("Pos = (%f, %f, %f)\n", frame.jointTransform.position.x, frame.jointTransform.position.y, frame.jointTransform.position.z);
+            //printf("Scale = (%f, %f, %f)\n", frame.jointTransform.scale.x, frame.jointTransform.scale.y, frame.jointTransform.scale.z);
+            //printf("Rot = (%f, %f, %f, %f)\n", frame.jointTransform.rotation.x, frame.jointTransform.rotation.y, frame.jointTransform.rotation.z, frame.jointTransform.rotation.w);
         }
     }
     anim.duration = biggestTimestamp;
@@ -708,7 +708,16 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
         scale[5] = poseTransform.scale.y;
         scale[10] = poseTransform.scale.z;
         math::MultiplyMatricesCM(transl, scale, translScale);
-        math::MultiplyMatricesCM(translScale, rot, skeleton->joints[i].localTransform);
+
+        float localPose[16];
+        math::MultiplyMatricesCM(translScale, rot, localPose);
+
+        if (i != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is goingon
+            math::MultiplyMatricesCM(skeleton->joints[i].bindpose, localPose, skeleton->joints[i].localTransform);
+        }
+        else {
+            math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
+        }
 
     }
     //
@@ -1003,7 +1012,7 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 }
 
 
-const char* animFiles[] = { "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip" };
+const char* animFiles[] = { "assets/akai_idle.gtanimclip", "assets/akai_walking.gtanimclip", "assets/akai_idle.gtanimclip", "assets/akai_idle.gtanimclip" };
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
@@ -1289,9 +1298,29 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     //
     static int selectedJoint = -1;
     if (selectedJoint != -1) {
+        ImGui::PlotLines("X Pos Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.position.x;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f); 
         ImGui::PlotLines("Y Pos Curve", [](void* data, int idx) -> float {
             return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.position.y;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr);
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+        ImGui::PlotLines("Z Pos Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.position.z;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+        ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
+
+        ImGui::PlotLines("X Rot Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.rotation.x;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+        ImGui::PlotLines("Y Rot Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.rotation.y;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+        ImGui::PlotLines("Z Rot Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.rotation.z;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+        ImGui::PlotLines("w Rot Curve", [](void* data, int idx) -> float {
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].jointTransform.rotation.w;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
     }
     if (ImGui::Begin("Skeleton")) {
