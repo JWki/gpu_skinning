@@ -43,7 +43,7 @@ public class BoneCurve
 
 public class GTAnimClip 
 {
-    string name;
+    public string name;
     public List<BoneCurve> curves = new List<BoneCurve>();
 }
 
@@ -72,78 +72,171 @@ public class GTAnimClipExporter : EditorWindow
     {
         GTAnimClip exportClip = new GTAnimClip();
         exportClip.name = clip.name;
-        foreach(var binding in AnimationUtility.GetCurveBindings(clip))
+        // first pass: stitch curves so we get a union of keyframes
+        foreach (var binding in AnimationUtility.GetCurveBindings(clip))
         {
             var unityCurve = AnimationUtility.GetEditorCurve(clip, binding);
             var idx = GetBoneIndexForPath(renderer.bones, binding.path);
-            if(idx == -1) 
+            if (idx == -1)
             {
                 // skip bones that don't exist duh
                 Debug.Log("Can't find bone with path " + binding.path + ", skipping.");
                 continue;
             }
             var curve = exportClip.curves.Find(cv => cv.boneIndex == idx);
-            if(curve == null)
+            if (curve == null)
             {
                 exportClip.curves.Add(new BoneCurve());
                 curve = exportClip.curves.Last();
-                curve.boneIndex = idx;
-                foreach(var key in unityCurve.keys)
+            }
+            curve.boneIndex = idx;
+            foreach (var key in unityCurve.keys)
+            {
+                var keyframe = curve.keys.Find(frame => Mathf.Approximately(frame.time, key.time));
+                if (keyframe == null)
                 {
-                    var keyframe = curve.keys.Find(frame => Mathf.Approximately(frame.time, key.time));
-                    if(keyframe == null)
+                    int idx0;
+                    for (idx0 = 0; idx0 < curve.keys.Count; ++idx0)
                     {
-                        int idx0;
-                        for(idx0 = 0; idx0 < curve.keys.Count; ++idx0) {
-                            if(curve.keys[idx0].time > key.time) break;
-                        }
-                        keyframe = new Keyframe();
-                        keyframe.time = key.time;
-                        if(curve.keys.Count == 0) 
-                        {
-                            curve.keys.Add(keyframe);
-                        } 
-                        else 
-                        {   // initialize with pose from previous keyframe
-                            keyframe.position = curve.keys[idx0].position;
-                            keyframe.orientation = curve.keys[idx0].orientation;
-                            curve.keys.Insert(idx0, keyframe);
-                        }
+                        if (curve.keys[idx0].time > key.time) break;
                     }
-                    /*
-                        property names are:
-                            m_LocalRotation.xyzw
-                            m_LocalPosition.xyz
-                     */
-                    switch(binding.propertyName)
+                    keyframe = new Keyframe();
+                    keyframe.time = key.time;
+                    if (curve.keys.Count <= idx0)
                     {
-                        case "m_LocalRotation.x":
-                            keyframe.orientation.x = key.value;
-                            break;
-                        case "m_LocalRotation.y":
-                            keyframe.orientation.y = key.value;
-                            break;
-                        case "m_LocalRotation.z":
-                            keyframe.orientation.z = key.value;
-                            break;
-                        case "m_LocalRotation.w":
-                            keyframe.orientation.w = key.value;
-                            break;
-                        case "m_LocalPosition.x":
-                            keyframe.position.x = key.value;
-                            break;
-                        case "m_LocalPosition.y":
-                            keyframe.position.y = key.value;
-                            break;
-                        case "m_LocalPosition.z":
-                            keyframe.position.z = key.value;
-                            break;
-                        default:
-                            Debug.Log("Unsupported curve key " + binding.propertyName);
-                            break;
+                        curve.keys.Add(keyframe);
+                    }
+                    else
+                    {   
+                        curve.keys.Insert(idx0, keyframe);
                     }
                 }
             }
+
+        }
+        // second pass: fill in values, effectively resampling in cases where there has been stitching happening (i.e. keyframes have been inserted for properties that didn't have a keyframe there)
+        foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+        {
+            var unityCurve = AnimationUtility.GetEditorCurve(clip, binding);
+            var idx = GetBoneIndexForPath(renderer.bones, binding.path);
+            if (idx == -1)
+            {
+                // skip bones that don't exist duh
+                Debug.Log("Can't find bone with path " + binding.path + ", skipping.");
+                continue;
+            }
+            var curve = exportClip.curves.Find(cv => cv.boneIndex == idx);
+            if (curve == null)
+            {
+                Debug.Log("Can't find curve for bone with path " + binding.path + ", this is no good!");
+                return null;
+            }
+            curve.boneIndex = idx;
+            for (int i = 0; i < unityCurve.keys.Count(); ++i)
+            {
+                var key = unityCurve.keys[i];
+                var keyframeIdx = curve.keys.FindIndex(frame => Mathf.Approximately(frame.time, key.time));
+                int prevKeyframeIdx = -1;
+                var lastKey = key;
+                if(i != 0)
+                {
+                    lastKey = unityCurve.keys[i - 1];
+                    prevKeyframeIdx = curve.keys.FindIndex(frame => Mathf.Approximately(frame.time, lastKey.time));
+                    if(prevKeyframeIdx < 0)
+                    {
+                        Debug.Log("Can't find keyframe, this is no good!");
+                        return null;
+                    }
+                }
+                if (keyframeIdx < 0)
+                {
+                    Debug.Log("Can't find keyframe, this is no good!");
+                    return null;
+                }
+                var keyframe = curve.keys[keyframeIdx];
+                /*
+                    property names are:
+                        m_LocalRotation.xyzw
+                        m_LocalPosition.xyz
+                */
+                switch (binding.propertyName)
+                {
+                    case "m_LocalRotation.x":
+                        keyframe.orientation.x = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].orientation.x = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    case "m_LocalRotation.y":
+                        keyframe.orientation.y = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].orientation.y = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    case "m_LocalRotation.z":
+                        keyframe.orientation.z = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].orientation.z = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    case "m_LocalRotation.w":
+                        keyframe.orientation.w = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].orientation.w = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    case "m_LocalPosition.x":
+                        keyframe.position.x = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].position.x = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    case "m_LocalPosition.y":
+                        keyframe.position.y = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].position.y = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    case "m_LocalPosition.z":
+                        keyframe.position.z = key.value;
+                        if (prevKeyframeIdx != -1)
+                        {
+                            for (int j = prevKeyframeIdx + 1; j < keyframeIdx; ++j)
+                            {
+                                curve.keys[j].position.z = Mathf.Lerp(lastKey.value, key.value, (float)(j - prevKeyframeIdx) / (float)(keyframeIdx - prevKeyframeIdx));
+                            }
+                        }
+                        break;
+                    default:
+                        Debug.Log("Unsupported curve key " + binding.propertyName);
+                        break;
+                }
+            }
+
         }
         return exportClip;
     }
@@ -162,6 +255,11 @@ public class GTAnimClipExporter : EditorWindow
                 string fileName = EditorUtility.SaveFilePanel("Export .gtanimclip file", "", gameObject.name, "gtanimclip");
                 exportClip = BuildAnimClip();
 
+                if(exportClip == null)
+                {
+                    Debug.Log("Export failed, no file has been written.");
+                    return;
+                }
                 using(BinaryWriter writer = new BinaryWriter(File.Open(fileName, FileMode.Create)))
                 {
                     // magic number and version
@@ -172,6 +270,10 @@ public class GTAnimClipExporter : EditorWindow
                     string name = exportClip.name;
                     byte[] arr = System.Text.Encoding.UTF8.GetBytes(name);
                     writer.Write((UInt32)arr.Length);
+                    for (int b = 0; b < arr.Length; ++b)
+                    {
+                        writer.Write(arr[b]);
+                    }
 
                     writer.Write((UInt32)exportClip.curves.Count);
 
@@ -193,7 +295,10 @@ public class GTAnimClipExporter : EditorWindow
                             writer.Write(key.orientation.z);
                             writer.Write(key.orientation.w);
                         }
+                        Debug.Log("Exported curve for bone #" + curve.boneIndex + " with " + curve.keys.Count + " keyframes.");
                     }
+
+                    Debug.Log("Exported anim '" + name + " (" + exportClip.curves.Count + " curves)");
                 }
             }
         }
