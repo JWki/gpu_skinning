@@ -28,41 +28,29 @@ using System.Linq;
             orientation             (float4)        // quaternion
 */
 
-public class TranslationKeyframe
+public class Keyframe
 {
     public float time;
-    public Vector3 value;
+    public Vector3 position;
+    public Quaternion rotation;
 }
 
-public class RotationKeyframe
-{
-    public float time;
-    public Quaternion value;
-}
-
-public class TranslationCurve
+public class BoneCurve
 {
     public int boneIndex;
-    public List<TranslationKeyframe> keys = new List<TranslationKeyframe>();
+    public List<Keyframe> keys = new List<Keyframe>();
 }
 
-public class RotationCurve
-{
-    public int boneIndex;
-    public List<RotationKeyframe> keys = new List<RotationKeyframe>();
-}
-
-public class GTAnimClip 
+public class GTAnimClip
 {
     public string name;
-    public List<TranslationCurve> translationCurves = new List<TranslationCurve>();
-    public List<RotationCurve> rotationCurves = new List<RotationCurve>();
+    public List<BoneCurve> curves = new List<BoneCurve>();
 }
 
 public class GTAnimClipExporter : EditorWindow
 {
-    private AnimationClip   clip;
-    private GameObject      gameObject;    
+    private AnimationClip clip;
+    private GameObject gameObject;
     private SkinnedMeshRenderer renderer;
     private GTAnimClip exportClip;
 
@@ -80,117 +68,94 @@ public class GTAnimClipExporter : EditorWindow
         return Array.FindIndex(bones, bone => bone.gameObject.name == boneName);
     }
 
+    public AnimationCurve GetCurve(AnimationClip clip, int boneIdx, string propertyName, List<AnimationCurve> curves)
+    {
+        foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+        {
+            if (boneIdx == GetBoneIndexForPath(renderer.bones, binding.path) && binding.propertyName.Equals(propertyName))
+            {
+                var curve = AnimationUtility.GetEditorCurve(clip, binding);
+                curves.Add(curve);
+                return curve;
+            }
+        }
+        return null;
+    }
+
     public GTAnimClip BuildAnimClip()
     {
         GTAnimClip exportClip = new GTAnimClip();
         exportClip.name = clip.name;
-        // first pass: stitch curves so we get a union of keyframes
+
+        // collect all paths
+        HashSet<string> bonePaths = new HashSet<string>();
         foreach (var binding in AnimationUtility.GetCurveBindings(clip))
         {
-            var unityCurve = AnimationUtility.GetEditorCurve(clip, binding);
-            var idx = GetBoneIndexForPath(renderer.bones, binding.path);
+            bonePaths.Add(binding.path);
+        }
+
+        foreach (var path in bonePaths)
+        {
+            // get all curves we're interested in:
+            // translation and rotation curves
+            var idx = GetBoneIndexForPath(renderer.bones, path);
             if (idx == -1)
             {
                 // skip bones that don't exist duh
-                Debug.Log("Can't find bone with path " + binding.path + ", skipping.");
+                Debug.Log("Can't find bone with path " + path + ", skipping.");
                 continue;
-            }
-            // translation
-            if(binding.propertyName.Contains("m_LocalPosition"))
-            {
-                var curve = exportClip.translationCurves.Find(cv => cv.boneIndex == idx);
-                if (curve == null)
-                {
-                    exportClip.translationCurves.Add(new TranslationCurve());
-                    curve = exportClip.translationCurves.Last();
-                }
-                curve.boneIndex = idx;
-                foreach (var key in unityCurve.keys)
-                {
-                    var keyframe = curve.keys.Find(frame => Mathf.Approximately(frame.time, key.time));
-                    if (keyframe == null)
-                    {
-                        int idx0;
-                        for (idx0 = 0; idx0 < curve.keys.Count; ++idx0)
-                        {
-                            if (curve.keys[idx0].time > key.time) break;
-                        }
-                        keyframe = new TranslationKeyframe();
-                        keyframe.time = key.time;
-                        if (curve.keys.Count <= idx0)
-                        {
-                            curve.keys.Add(keyframe);
-                        }
-                        else
-                        {
-                            curve.keys.Insert(idx0, keyframe);
-                        }
-                    }
-                    if (binding.propertyName.Contains(".x"))
-                    {
-                        keyframe.value.x = key.value;
-                    }
-                    else if (binding.propertyName.Contains(".y"))
-                    {
-                        keyframe.value.y = key.value;
-                    }
-                    else if (binding.propertyName.Contains(".z"))
-                    {
-                        keyframe.value.z = key.value;
-                    }
-                }
-            } else if (binding.propertyName.Contains("m_LocalRotation"))
-            {
-                var curve = exportClip.rotationCurves.Find(cv => cv.boneIndex == idx);
-                if (curve == null)
-                {
-                    exportClip.rotationCurves.Add(new RotationCurve());
-                    curve = exportClip.rotationCurves.Last();
-                }
-                curve.boneIndex = idx;
-                foreach (var key in unityCurve.keys)
-                {
-                    var keyframe = curve.keys.Find(frame => Mathf.Approximately(frame.time, key.time));
-                    if (keyframe == null)
-                    {
-                        int idx0;
-                        for (idx0 = 0; idx0 < curve.keys.Count; ++idx0)
-                        {
-                            if (curve.keys[idx0].time > key.time) break;
-                        }
-                        keyframe = new RotationKeyframe();
-                        keyframe.time = key.time;
 
-                        if (curve.keys.Count <= idx0)
-                        {
-                            curve.keys.Add(keyframe);
-                        }
-                        else
-                        {
-                            curve.keys.Insert(idx0, keyframe);
-                        }
-                    }
-                    if (binding.propertyName.Contains(".x"))
-                    {
-                        keyframe.value.x = key.value;
-                    }
-                    else if (binding.propertyName.Contains(".y"))
-                    {
-                        keyframe.value.y = key.value;
-                    }
-                    else if (binding.propertyName.Contains(".z"))
-                    {
-                        keyframe.value.z = key.value;
-                    }
-                    else if (binding.propertyName.Contains(".w"))
-                    {
-                        keyframe.value.w = key.value;
-                    }
-                }
             }
-            
+
+            var boneCurve = new BoneCurve();
+            boneCurve.boneIndex = idx;
+            exportClip.curves.Add(boneCurve);
+
+            List<AnimationCurve> curves = new List<AnimationCurve>();
+            var translationCurveX = GetCurve(clip, idx, "m_LocalPosition.x", curves);
+            var translationCurveY = GetCurve(clip, idx, "m_LocalPosition.y", curves);
+            var translationCurveZ = GetCurve(clip, idx, "m_LocalPosition.z", curves);
+
+            var rotationCurveX = GetCurve(clip, idx, "m_LocalRotation.x", curves);
+            var rotationCurveY = GetCurve(clip, idx, "m_LocalRotation.y", curves);
+            var rotationCurveZ = GetCurve(clip, idx, "m_LocalRotation.z", curves);
+            var rotationCurveW = GetCurve(clip, idx, "m_LocalRotation.w", curves);
+
+            float duration = 0.0f;
+            foreach (var curve in curves)
+            {
+                curve.postWrapMode = WrapMode.ClampForever;
+                var len = curve.length;
+                var lastKey = curve.keys[len - 1];
+                if (duration < lastKey.time) { duration = lastKey.time; }
+            }
+            // sample all curves at 30hz, create one keyframe for each sample
+            float frequency = 1.0f / 60.0f;
+            float progress = 0.0f;
+            while (progress < duration)
+            {
+                Keyframe key = new Keyframe();
+                key.time = progress;
+
+                key.position.x = translationCurveX == null ? 0.0f : translationCurveX.Evaluate(progress);
+                key.position.y = translationCurveY == null ? 0.0f : translationCurveY.Evaluate(progress);
+                key.position.z = translationCurveZ == null ? 0.0f : translationCurveZ.Evaluate(progress);
+                key.rotation.x = rotationCurveX == null ? 0.0f : rotationCurveX.Evaluate(progress);
+                key.rotation.y = rotationCurveY == null ? 0.0f : rotationCurveY.Evaluate(progress);
+                key.rotation.z = rotationCurveZ == null ? 0.0f : rotationCurveZ.Evaluate(progress);
+                key.rotation.w = rotationCurveW == null ? 0.0f : rotationCurveW.Evaluate(progress);
+
+                boneCurve.keys.Add(key);
+
+                progress += frequency;
+            }
+            if (progress != duration)
+            {   // @TODO
+
+            }
 
         }
+
         return exportClip;
     }
 
@@ -201,23 +166,23 @@ public class GTAnimClipExporter : EditorWindow
         gameObject = EditorGUILayout.ObjectField("Object", gameObject, typeof(GameObject), false) as GameObject;
         renderer = gameObject.GetComponent<SkinnedMeshRenderer>();
 
-        if(GUILayout.Button("Export"))
+        if (GUILayout.Button("Export"))
         {
-            if(clip != null && gameObject != null && renderer != null)
+            if (clip != null && gameObject != null && renderer != null)
             {
                 string fileName = EditorUtility.SaveFilePanel("Export .gtanimclip file", "", gameObject.name, "gtanimclip");
                 exportClip = BuildAnimClip();
 
-                if(exportClip == null)
+                if (exportClip == null)
                 {
                     Debug.Log("Export failed, no file has been written.");
                     return;
                 }
-                using(BinaryWriter writer = new BinaryWriter(File.Open(fileName, FileMode.Create)))
+                using (BinaryWriter writer = new BinaryWriter(File.Open(fileName, FileMode.Create)))
                 {
                     // magic number and version
-			        writer.Write((UInt32)0xdeadbeef);
-			        writer.Write((UInt32)1);
+                    writer.Write((UInt32)0xdeadbeef);
+                    writer.Write((UInt32)1);
 
                     // clip name
                     string name = exportClip.name;
@@ -228,9 +193,9 @@ public class GTAnimClipExporter : EditorWindow
                         writer.Write(arr[b]);
                     }
 
-                    { // translation curves
-                        writer.Write((UInt32)exportClip.translationCurves.Count);
-                        foreach (var curve in exportClip.translationCurves)
+                    {   // curves
+                        writer.Write((UInt32)exportClip.curves.Count);
+                        foreach (var curve in exportClip.curves)
                         {
                             writer.Write((UInt32)curve.boneIndex);
                             writer.Write((UInt32)curve.keys.Count);
@@ -239,39 +204,25 @@ public class GTAnimClipExporter : EditorWindow
                             {
                                 writer.Write(key.time);
 
-                                writer.Write(key.value.x);
-                                writer.Write(key.value.y);
-                                writer.Write(key.value.z);
-                            }
-                            Debug.Log("Exported translation curve for bone #" + curve.boneIndex + " with " + curve.keys.Count + " keyframes.");
-                        }
-                    }
-                    { // rotation curves
-                        writer.Write((UInt32)exportClip.rotationCurves.Count);
-                        foreach (var curve in exportClip.rotationCurves)
-                        {
-                            writer.Write((UInt32)curve.boneIndex);
-                            writer.Write((UInt32)curve.keys.Count);
+                                writer.Write(key.position.x);
+                                writer.Write(key.position.y);
+                                writer.Write(key.position.z);
 
-                            foreach (var key in curve.keys)
-                            {
-                                writer.Write(key.time);
-
-                                writer.Write(key.value.x);
-                                writer.Write(key.value.y);
-                                writer.Write(key.value.z);
-                                writer.Write(key.value.w);
+                                writer.Write(key.rotation.x);
+                                writer.Write(key.rotation.y);
+                                writer.Write(key.rotation.z);
+                                writer.Write(key.rotation.w);
                             }
-                            Debug.Log("Exported rotation curve for bone #" + curve.boneIndex + " with " + curve.keys.Count + " keyframes.");
+                            Debug.Log("Exported curve for bone #" + curve.boneIndex + " with " + curve.keys.Count + " keyframes.");
                         }
                     }
 
-                    Debug.Log("Exported anim '" + name + " (" + exportClip.translationCurves.Count + " translation curves, " + exportClip.rotationCurves.Count +  ")");
+                    Debug.Log("Exported anim '" + name + " (" + exportClip.curves.Count + " curves)");
                 }
             }
         }
 
-        if(exportClip != null)
+        if (exportClip != null)
         {
             //EditorGUILayout.LabelField("Clip: " + clip.name);
             //EditorGUILayout.LabelField("Num affected bones: " + exportClip.curves.Count);
@@ -281,7 +232,7 @@ public class GTAnimClipExporter : EditorWindow
             //}
         }
     }
-} 
+}
 
 // for debugging
 public class ClipInfo : EditorWindow

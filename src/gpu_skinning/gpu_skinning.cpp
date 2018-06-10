@@ -487,38 +487,26 @@ bool ImportGTSkeleton(const char* path, Skeleton* outSkeleton)
 }
 ///
 
-struct TranslationKeyFrame
+struct Keyframe
 {
     float           timeStamp;
-    math::Vec3      value;
+    math::Vec3      position;
+    math::Vec4      rotation;
+
 };
 
-struct RotationKeyFrame
+struct BoneTrack
 {
-    float       timeStamp;
-    math::Vec4  value;
-};
-
-struct TranslationTrack
-{
-    uint32_t                numKeyframes = 0;
-    TranslationKeyFrame*    keyframes = nullptr;
-};
-
-struct RotationTrack
-{
-    uint32_t                numKeyframes = 0;
-    RotationKeyFrame*       keyframes = nullptr;
+    uint32_t    numKeyframes = 0;
+    Keyframe*   keyframes = nullptr;
 };
 
 struct Animation
 {
-    char*               name  = "";
-    uint32_t            numTranslationTracks = 0;
-    uint32_t            numRotationTracks = 0;
-    TranslationTrack    translationTracks[MAX_NUM_BONES];
-    RotationTrack       rotationTracks[MAX_NUM_BONES];
-    float               duration = 0.0f;
+    char*           name  = "";
+    uint32_t        numTracks = 0;
+    BoneTrack       tracks[MAX_NUM_BONES];
+    float           duration = 0.0f;
 };
 
 struct AnimationState
@@ -620,39 +608,22 @@ bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, Animation* ou
     stream.ReadBytes(anim.name, nameLen);
     float biggestTimestamp = 0.0f;
     
-    anim.numTranslationTracks = stream.Read<uint32_t>();
-    for (uint32_t j = 0; j < anim.numTranslationTracks; ++j) {
+    anim.numTracks = stream.Read<uint32_t>();
+    for (uint32_t j = 0; j < anim.numTracks; ++j) {
         auto importId = stream.Read<uint32_t>();
         auto id = GetBoneWithImportId(targetSkeleton, importId);
         {   // translation
-            auto& track = anim.translationTracks[id];
+            auto& track = anim.tracks[id];
             track.numKeyframes = stream.Read<uint32_t>();
             //assert(track.numKeyframes != 0);
-            track.keyframes = new TranslationKeyFrame[track.numKeyframes];
+            track.keyframes = new Keyframe[track.numKeyframes];
             //printf("Bone: %s\n", targetSkeleton->nameTable[id]);
             for (uint32_t k = 0; k < track.numKeyframes; ++k) {
                 auto& frame = track.keyframes[k];
                 frame.timeStamp = stream.Read<float>();
                 if (frame.timeStamp > biggestTimestamp) { biggestTimestamp = frame.timeStamp; }
-                frame.value = stream.Read<math::Vec3>();
-            }
-        }
-    }
-    anim.numRotationTracks = stream.Read<uint32_t>();
-    for (uint32_t j = 0; j < anim.numRotationTracks; ++j) {
-        auto importId = stream.Read<uint32_t>();
-        auto id = GetBoneWithImportId(targetSkeleton, importId);
-        {   // rotation
-            auto& track = anim.rotationTracks[id];
-            track.numKeyframes = stream.Read<uint32_t>();
-            //assert(track.numKeyframes != 0);
-            track.keyframes = new RotationKeyFrame[track.numKeyframes];
-            //printf("Bone: %s\n", targetSkeleton->nameTable[id]);
-            for (uint32_t k = 0; k < track.numKeyframes; ++k) {
-                auto& frame = track.keyframes[k];
-                frame.timeStamp = stream.Read<float>();
-                if (frame.timeStamp > biggestTimestamp) { biggestTimestamp = frame.timeStamp; }
-                frame.value = stream.Read<math::Vec4>();
+                frame.position = stream.Read<math::Vec3>();
+                frame.rotation = stream.Read<math::Vec4>();
             }
         }
     }
@@ -692,47 +663,28 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
         math::Vec4 rotation;
 
         // translation
-        if (anim.translationTracks[i].numKeyframes != 0)
+        if (anim.tracks[i].numKeyframes != 0)
         {
-            TranslationKeyFrame* prevKeyframe = anim.translationTracks[i].keyframes;
-            TranslationKeyFrame* nextKeyframe = anim.translationTracks[i].keyframes;
-            for (uint32_t k = 0; k < anim.translationTracks[i].numKeyframes; ++k) {
-                nextKeyframe = anim.translationTracks[i].keyframes + k;
+            Keyframe* prevKeyframe = anim.tracks[i].keyframes;
+            Keyframe* nextKeyframe = anim.tracks[i].keyframes;
+            for (uint32_t k = 0; k < anim.tracks[i].numKeyframes; ++k) {
+                nextKeyframe = anim.tracks[i].keyframes + k;
                 if (nextKeyframe->timeStamp > time) {
                     break;
                 }
-                prevKeyframe = anim.translationTracks[i].keyframes + k;
+                prevKeyframe = anim.tracks[i].keyframes + k;
             }
             if (prevKeyframe != nextKeyframe) {
                 float alpha = (time - prevKeyframe->timeStamp) / (nextKeyframe->timeStamp - prevKeyframe->timeStamp);
-                translation = math::Lerp(prevKeyframe->value, nextKeyframe->value, alpha);
+                translation = math::Lerp(prevKeyframe->position, nextKeyframe->position, alpha);
+                rotation = math::Slerp(prevKeyframe->rotation, nextKeyframe->rotation, alpha);
             }
             else {
-                translation = prevKeyframe->value;
+                translation = prevKeyframe->position;
+                rotation = prevKeyframe->rotation;
             }
             //translation = prevKeyframe->value;
             //translation = math::Vec3();
-        }
-        if (anim.rotationTracks[i].numKeyframes != 0)
-        {
-            // rotation
-            RotationKeyFrame* prevKeyframe = anim.rotationTracks[i].keyframes;
-            RotationKeyFrame* nextKeyframe = anim.rotationTracks[i].keyframes;
-            for (uint32_t k = 0; k < anim.rotationTracks[i].numKeyframes; ++k) {
-                nextKeyframe = anim.rotationTracks[i].keyframes + k;
-                if (nextKeyframe->timeStamp > time) {
-                    break;
-                }
-                prevKeyframe = anim.rotationTracks[i].keyframes + k;
-            }
-            if (prevKeyframe != nextKeyframe) {
-                float alpha = (time - prevKeyframe->timeStamp) / (nextKeyframe->timeStamp - prevKeyframe->timeStamp);
-                rotation = math::Normalize(math::Slerp(prevKeyframe->value, nextKeyframe->value, alpha));
-            }
-            else {
-                rotation = prevKeyframe->value;
-            }
-            //rotation = prevKeyframe->value;
         }
 
         // @NOTE
@@ -752,7 +704,7 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
         float localPose[16];
         math::MultiplyMatricesCM(transl, rot, localPose);
 
-        if (i != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is goingon
+        if (i != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is going on
             math::MultiplyMatricesCM(skeleton->joints[i].bindpose, localPose, skeleton->joints[i].localTransform);
             //math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
         }
@@ -764,26 +716,7 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
     //
 }
 
-struct PoseModifier
-{
-    enum {
-        ADDITIVE_ROTATION_GLOBAL_AXIS
-    } type;
-
-    math::Vec3 axis;
-    float value = 0;
-};
-
-#define MAX_NUM_MODS 8
-struct PoseModifierStack
-{
-    PoseModifier mod[MAX_NUM_BONES][MAX_NUM_MODS];
-
-    uint8_t numMods[MAX_NUM_BONES] = { 0 };
-};
-
-
-void TransformHierarchy(Skeleton* skeleton, PoseModifierStack* modifierStack)
+void TransformHierarchy(Skeleton* skeleton)
 {
     for (auto i = 0u; i < skeleton->numJoints; ++i) {
         if (skeleton->joints[i].parent != -1) {
@@ -792,23 +725,6 @@ void TransformHierarchy(Skeleton* skeleton, PoseModifierStack* modifierStack)
         }
         else {
             math::Copy4x4FloatMatrixCM(skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
-        }
-
-        for (auto j = 0u; j < modifierStack->numMods[i]; ++j) {
-            auto& mod = modifierStack->mod[i][j];
-            switch (mod.type) {
-                case PoseModifier::ADDITIVE_ROTATION_GLOBAL_AXIS:
-                    float t[16];
-                    float r[16];
-
-                    auto translation = math::Get4x4FloatMatrixColumnCM(skeleton->joints[i].globalTransform, 3).xyz;
-                    math::Set4x4FloatMatrixColumnCM(skeleton->joints[i].globalTransform, 3, math::Vec4(0.0f, 0.0f, 0.0f, 1.0f));
-
-                    math::Make4x4FloatTranslationMatrixCM(t, translation);
-                    math::Make4x4FloatRotationMatrixCMLH(r, mod.axis, mod.value);
-                    math::MultiplyMatricesCM(t, r, skeleton->joints[i].globalTransform);
-                    break;
-            }
         }
     }
 }
@@ -1242,8 +1158,6 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
     //ImGui::ShowTestWindow();
 
-    PoseModifierStack modStack;
-
     static bool tPose = false;
     static bool showSkeleton = true;
     static bool transformHierarchy = true;
@@ -1278,12 +1192,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
                 float rr[16];
                 math::MultiplyMatricesCM(r, joint->localTransform, rr);
                // math::MultiplyMatricesCM(t, rr, joint->localTransform);
-
-                modStack.mod[i][0].axis = math::Vec3(0.0f, 1.0f, 0.0f);
-                modStack.mod[i][0].value = math::DegreesToRadians(rotToApply * sign);
-                modStack.mod[i][0].type = PoseModifier::ADDITIVE_ROTATION_GLOBAL_AXIS;
-                modStack.numMods[0] = 1;
-
+                
                 rotToApplyTotal = rotToApplyTotal - rotToApply;
                 if (joint->parent != -1) {
                     joint = &g_data.testSkeleton.joints[joint->parent];
@@ -1295,12 +1204,12 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         if(rootMotion)
         {   // root motion
             auto& rootJoint = g_data.testSkeleton.joints[0];
-            auto numKeyframes = g_data.animState.currentAnim->translationTracks[0].numKeyframes;
-            auto& firstKeyframe = g_data.animState.currentAnim->translationTracks[0].keyframes[0];
-            static auto initialPosition = firstKeyframe.value;
+            auto numKeyframes = g_data.animState.currentAnim->tracks[0].numKeyframes;
+            auto& firstKeyframe = g_data.animState.currentAnim->tracks[0].keyframes[0];
+            static auto initialPosition = firstKeyframe.position;
             static auto sourcePosition = initialPosition;
             if (didSwitchAnimation) {
-                initialPosition = firstKeyframe.value;
+                initialPosition = firstKeyframe.position;
                 didSwitchAnimation = false;
             }
             if (didLoop) {
@@ -1323,10 +1232,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
     }
 
-
-
+    //
     if (transformHierarchy) {
-        TransformHierarchy(&g_data.testSkeleton, &modStack);
+        TransformHierarchy(&g_data.testSkeleton);
     }
     else {
         for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) {
@@ -1340,28 +1248,28 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     static int selectedJoint = -1;
     if (selectedJoint != -1) {
         ImGui::PlotLines("X Pos Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->translationTracks[0].keyframes[idx].value.x;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->translationTracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].position.x;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
         ImGui::PlotLines("Y Pos Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->translationTracks[0].keyframes[idx].value.y;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->translationTracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].position.y;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
         ImGui::PlotLines("Z Pos Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->translationTracks[0].keyframes[idx].value.z;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->translationTracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].position.z;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
 
         ImGui::PlotLines("X Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->rotationTracks[0].keyframes[idx].value.x;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->rotationTracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.x;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::PlotLines("Y Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->rotationTracks[0].keyframes[idx].value.y;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->rotationTracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.y;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::PlotLines("Z Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->rotationTracks[0].keyframes[idx].value.z;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->rotationTracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.z;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::PlotLines("w Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->rotationTracks[0].keyframes[idx].value.w;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->rotationTracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.w;
+        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
     }
     if (ImGui::Begin("Skeleton")) {

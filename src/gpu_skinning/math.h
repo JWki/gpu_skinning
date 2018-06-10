@@ -243,7 +243,7 @@ namespace math
         float s0 = Cos(theta) - dot * Sin(theta) / Sin(theta0);
         float s1 = Sin(theta) / Sin(theta0);
 
-        return (s0 * a) + (s1 * b);
+        return Normalize((s0 * a) + (s1 * b));
     }
     ///
     float Random(uint32_t& randomState);
