@@ -976,7 +976,8 @@ const char* animFiles[] = { "assets/knight_idle.gtanimclip", "assets/knight_walk
                             "assets/knight_run_slide.gtanimclip", "assets/knight_draw.gtanimclip",
                             "assets/knight_onehand_combo.gtanimclip", "assets/knight_sheathe.gtanimclip", 
                             "assets/knight_draw_twohand.gtanimclip",
-                            "assets/knight_twohand_combo.gtanimclip", "assets/knight_sheathe_twohanded.gtanimclip" };
+                            "assets/knight_twohand_combo.gtanimclip", "assets/knight_sheathe_twohanded.gtanimclip",
+                            "assets/knight_dance.gtanimclip" };
 const int numAnims = ARRAYSIZE(animFiles);
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
