@@ -705,7 +705,9 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLo
         math::MultiplyMatricesCM(transl, rot, localPose);
 
         if (i != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is going on
-            math::MultiplyMatricesCM(skeleton->joints[i].bindpose, localPose, skeleton->joints[i].localTransform);
+            float transl[16];   // @NOTE THIS IS SUPER WEIRD 
+            math::Make4x4FloatTranslationMatrixCM(transl, math::Get4x4FloatMatrixColumnCM(skeleton->joints[i].bindpose, 3).xyz);
+            math::MultiplyMatricesCM(transl, localPose, skeleton->joints[i].localTransform);
             //math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
         }
         else {
@@ -751,7 +753,7 @@ struct AppData
     Shader      shader;
 
     uint32_t        currentAnim = 0;
-    Animation       testAnim[4];
+    Animation       testAnim[128];
     AnimationState  animState;
 
     ID3D11Buffer* frameConstantBuffer;
@@ -969,7 +971,13 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 }
 
 
-const char* animFiles[] = { "assets/vanguard_idle.gtanimclip", "assets/vanguard_walking.gtanimclip", "assets/vanguard_idle.gtanimclip", "assets/vanguard_walking.gtanimclip" };
+const char* animFiles[] = { "assets/knight_idle.gtanimclip", "assets/knight_walk.gtanimclip", 
+                            "assets/knight_run_default.gtanimclip", "assets/knight_run_fast.gtanimclip", 
+                            "assets/knight_run_slide.gtanimclip", "assets/knight_draw.gtanimclip",
+                            "assets/knight_onehand_combo.gtanimclip", "assets/knight_sheathe.gtanimclip", 
+                            "assets/knight_draw_twohand.gtanimclip",
+                            "assets/knight_twohand_combo.gtanimclip", "assets/knight_sheathe_twohanded.gtanimclip" };
+const int numAnims = ARRAYSIZE(animFiles);
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
@@ -1018,13 +1026,13 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
        printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }*/
-    if(!ImportGTMesh("assets/vanguard.gtmesh", &g_data.testMesh, device)) {
+    if(!ImportGTMesh("assets/knight.gtmesh", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
     printf("Created test mesh\n");
 
-    if (!ImportGTSkeleton("assets/vanguard.gtskel", &g_data.testSkeleton)) {
+    if (!ImportGTSkeleton("assets/knight.gtskel", &g_data.testSkeleton)) {
         printf("failed to load test skeleton from %s\n", "assets/character.sga");
         return;
     }
@@ -1034,7 +1042,7 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     uint32_t numAnimations = 0;
     uint32_t currentImportAnimation = 0;
     
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < numAnims; ++i) {
         if (!ImportGTAnimation(animFiles[i], &g_data.testSkeleton, &g_data.testAnim[currentImportAnimation])) {
             printf("failed to load animation from %s\n", animFiles[i]);
             return;
@@ -1106,7 +1114,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     math::Make4x4FloatProjectionMatrixCMLH(g_data.frameData.projection, math::DegreesToRadians(60.0f), width, height, 0.1f, 1000.0f);
     float inverseCamera[16];
 
-    static float zoom = 3.0f;
+    static float zoom = 1.0f;
     static float camHeight = 0.0f;
     static float xRot = 0.0f;
     static float yRot = 0.0f;
@@ -1126,7 +1134,16 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     auto camPos = math::TransformPositionCM(math::Vec3(0.0f, camHeight, -zoom), rot);
     
     auto root = 0;
-    math::Vec3 focus = math::Vec3();// math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[root].globalTransform, 3).xyz;
+
+    static math::Vec3 offset(2.0f, 4.0f, -7.5f);
+
+    ImGui::DragFloat("Offset X", &offset.x, 0.01f);
+    ImGui::DragFloat("Offset Y", &offset.y, 0.01f);
+    ImGui::DragFloat("Offset Z", &offset.z, 0.01f);
+
+    math::Vec3 playerPos = math::Get4x4FloatMatrixColumnCM(g_data.objectData.transform, 3).xyz + math::Vec3(0.0f, 0.8f, 0.0f);
+    camPos = playerPos + offset* zoom;
+    math::Vec3 focus = camPos + math::Vec3(0.0f, 0.0f, 500.0f);
     math::Make4x4FloatLookAtMatrixCMLH(inverseCamera, camPos, focus, math::Vec3(0.0f, 1.0f, 0.0f));
     math::Inverse4x4FloatMatrixCM(inverseCamera, g_data.frameData.camera);
     math::MultiplyMatricesCM(g_data.frameData.projection, g_data.frameData.camera, g_data.frameData.cameraProjection);
@@ -1151,7 +1168,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         didLoop = true;
     }
     if (didLoop && sequence) {
-        g_data.currentAnim = (g_data.currentAnim + 1) % 4;
+        g_data.currentAnim = (g_data.currentAnim + 1) % numAnims;
         g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
         didSwitchAnimation = true;
     }
@@ -1252,7 +1269,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::SliderFloat("Playback Speed Modifier", &animSpeedMod, -1.0f, 1.0f);
 
         if (ImGui::BeginCombo("Animation Clip", g_data.testAnim[g_data.currentAnim].name)) {
-            for (uint32_t i = 0; i < 4; ++i) {
+            for (uint32_t i = 0; i < numAnims; ++i) {
                 ImGui::PushID(i);
                 if (ImGui::Selectable(g_data.testAnim[i].name, i == g_data.currentAnim)) {
                     g_data.currentAnim = i;
