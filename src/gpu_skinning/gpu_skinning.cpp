@@ -969,7 +969,7 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 }
 
 
-const char* animFiles[] = { "assets/akai_idle.gtanimclip", "assets/akai_walking.gtanimclip", "assets/akai_dance01.gtanimclip", "assets/akai_dance02.gtanimclip" };
+const char* animFiles[] = { "assets/vanguard_idle.gtanimclip", "assets/vanguard_walking.gtanimclip", "assets/vanguard_idle.gtanimclip", "assets/vanguard_walking.gtanimclip" };
 ///
 void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext)
 {
@@ -1018,13 +1018,13 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
        printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }*/
-    if(!ImportGTMesh("assets/akai.gtmesh", &g_data.testMesh, device)) {
+    if(!ImportGTMesh("assets/vanguard.gtmesh", &g_data.testMesh, device)) {
         printf("failed to load test mesh from %s\n", "assets/character.gtmesh");
         return;
     }
     printf("Created test mesh\n");
 
-    if (!ImportGTSkeleton("assets/akai.gtskel", &g_data.testSkeleton)) {
+    if (!ImportGTSkeleton("assets/vanguard.gtskel", &g_data.testSkeleton)) {
         printf("failed to load test skeleton from %s\n", "assets/character.sga");
         return;
     }
@@ -1168,38 +1168,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     }
 
     {   // override local poses here
-        auto shoulder = GetBoneWithName(&g_data.testSkeleton, "mixamorig:RightLeg");
-        for (auto i = shoulder; i == shoulder; ++i) {
-            auto joint = &g_data.testSkeleton.joints[i];
-            
-            static float rotAngle = 0.0f;
-            ImGui::DragFloat("Rotation", &rotAngle, 0.1f);
-
-            float rotToApplyTotal = math::Abs(rotAngle);
-            float sign = rotAngle >= 0.0f ? 1.0f : -1.0f;
-            while (rotToApplyTotal > 0.0f && joint != nullptr) {
-                if (joint->parent == -1) { break; }
-                float r[16];
-                float t[16];
-                auto translation = math::Get4x4FloatMatrixColumnCM(joint->localTransform, 3).xyz;
-                math::Set4x4FloatMatrixColumnCM(joint->localTransform, 3, math::Vec4(0.0f, 0.0f, 0.0f, 1.0f));
-                math::Make4x4FloatTranslationMatrixCM(t, translation);
-
-                static const float threshold = 16.0f;
-                float rotToApply = math::Clamp(rotToApplyTotal, 0.0f, threshold);
-                auto axis = joint->parent != -1 ? math::Vec3(0.0f, 1.0f, 0.0f) : math::Vec3(0.0f, 1.0f, 0.0f);
-                math::Make4x4FloatRotationMatrixCMLH(r, axis, math::DegreesToRadians(rotToApply * sign));
-                float rr[16];
-                math::MultiplyMatricesCM(r, joint->localTransform, rr);
-               // math::MultiplyMatricesCM(t, rr, joint->localTransform);
-                
-                rotToApplyTotal = rotToApplyTotal - rotToApply;
-                if (joint->parent != -1) {
-                    joint = &g_data.testSkeleton.joints[joint->parent];
-                }
-            }
-        }
-
+        
         static math::Vec3 objectPosition;
         if(rootMotion)
         {   // root motion
