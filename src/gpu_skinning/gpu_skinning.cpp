@@ -515,6 +515,7 @@ struct AnimationState
     float           animationTime = 0.0f;
 };
 
+using ConditionCallback = bool(*)(void*);
 struct AnimationStateTransition
 {
     int32_t sourceStateIdx  = -1;
@@ -524,6 +525,9 @@ struct AnimationStateTransition
 
     float   sourceOverlap   = 0.0f;
     float   targetOverlap   = 0.0f;
+
+    ConditionCallback       condition = nullptr;
+    void*                   userData = nullptr;
 };
 
 #define MAX_NUM_ANIM_STATES 64
@@ -540,6 +544,11 @@ struct AnimationStateMachine
     AnimationStateTransition    transitions[MAX_NUM_ANIM_TRANSITIONS];
 };
 
+
+struct CharacterController
+{
+    float speed = 0.0f;
+};
 ///
 int GetBoneWithName(Skeleton* skeleton, const char* name)
 {
@@ -801,6 +810,7 @@ struct AppData
 
     AnimationClip           testAnim[128];
     AnimationStateMachine   animController;
+    CharacterController     characterController;
 
     ID3D11Buffer* frameConstantBuffer;
     ID3D11Buffer* objectConstantBuffer;
@@ -809,6 +819,7 @@ struct AppData
     FrameConstantData frameData;
     ObjectConstantData objectData;
     SkeletonConstantData skeletonData;
+
 
 } g_data;
 
@@ -1103,31 +1114,80 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
     g_data.animController.numStates = numAnims;
     g_data.animController.currentStateIdx = 0;
 
+    // create states
     for (int i = 0; i < numAnims; ++i) {
         g_data.animController.states[i].animationTime = 0.0f;
         g_data.animController.states[i].animClip = &g_data.testAnim[i];
-    
-        if (i != 0) {
-            auto j = i - 1;
-            auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
-            transition.sourceStateIdx = j;
-            transition.targetStateIdx = i;
-
-            transition.duration = 0.5f;
-            transition.sourceOverlap = 0.15f;
-            transition.targetOverlap = 0.15f;
-
-
-            transition.t = 0.0f;
-        }
     }
-    {
+    // create transitions
+    {   // idle -> walk
         auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
-        transition.sourceStateIdx = numAnims -1;
-        transition.targetStateIdx = 0;
-        transition.t = 0.0f;
-    }
+        
+        transition.sourceStateIdx = 0;
+        transition.targetStateIdx = 1;
 
+        transition.duration = 0.5f;
+        transition.sourceOverlap = 0.5f;
+        transition.targetOverlap = 0.5f;
+
+        transition.userData = &g_data.characterController;
+        transition.condition = [](void* data) -> bool {
+            auto controller = static_cast<CharacterController*>(data);
+            return controller->speed > 0.0f && controller->speed < 2.0f;
+        };
+    }
+    {   // walk -> walk (loop)
+        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
+
+        transition.sourceStateIdx = 1;
+        transition.targetStateIdx = 1;
+
+        transition.duration = 0.0f;
+        transition.sourceOverlap = 0.0f;
+        transition.targetOverlap = 0.0f;
+
+        transition.userData = &g_data.characterController;
+        transition.condition = [](void* data) -> bool {
+            auto controller = static_cast<CharacterController*>(data);
+            return controller->speed > 0.0f && controller->speed < 2.0f;
+        };
+    }
+    {   // walk -> run 
+        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
+
+        transition.sourceStateIdx = 1;
+        transition.targetStateIdx = 2;
+
+        transition.duration = (g_data.testAnim[1].duration + g_data.testAnim[2].duration) * 0.5f;
+        transition.sourceOverlap = g_data.testAnim[1].duration * 0.5f;
+        transition.targetOverlap = g_data.testAnim[2].duration * 0.5f;
+
+        transition.userData = &g_data.characterController;
+        transition.condition = [](void* data) -> bool {
+            auto controller = static_cast<CharacterController*>(data);
+            return controller->speed > 2.0f;
+        };
+    }
+    {   // run -> run (loop)
+        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
+
+        transition.sourceStateIdx = 2;
+        transition.targetStateIdx = 2;
+
+        transition.duration = 0.0f;
+        transition.sourceOverlap = 0.0f;
+        transition.targetOverlap = 0.0f;
+
+        transition.userData = &g_data.characterController;
+        transition.condition = [](void* data) -> bool {
+            auto controller = static_cast<CharacterController*>(data);
+            return controller->speed > 2.0f;
+        };
+    }
+    {   // 
+
+    }
+        
     {   ///
         {   // frame constant data
             D3D11_BUFFER_DESC desc;
@@ -1232,7 +1292,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     {
         for (uint32_t i = 0; i < controller->numTransitions; ++i) {
             auto& transition = controller->transitions[i];
-            if (transition.sourceStateIdx == controller->currentStateIdx && transition.sourceOverlap >= sourceTimeDiff) { return i; }
+            if (transition.condition != nullptr && transition.sourceStateIdx == controller->currentStateIdx && transition.condition(transition.userData)) { return i; }
+            if (transition.condition == nullptr && transition.sourceStateIdx == controller->currentStateIdx && transition.sourceOverlap >= sourceTimeDiff) { return i; }
+            
         }
         return -1;
     };
@@ -1343,6 +1405,11 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
     }
+
+    if (ImGui::Begin("Character Controller")) {
+        ImGui::SliderFloat("Speed", &g_data.characterController.speed, 0.0f, 3.0f);
+    } ImGui::End();
+
     if (ImGui::Begin("Skeleton")) {
         ImGui::Checkbox("T-Pose", &tPose);
         ImGui::Checkbox("Show Skeleton", &showSkeleton);
