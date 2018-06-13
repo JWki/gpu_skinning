@@ -764,15 +764,12 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationStateMachine* animController
     //
 }
 
-void TransformHierarchy(Skeleton* skeleton)
+void TransformHierarchy(Skeleton* skeleton, uint32_t offset)
 {
-    for (auto i = 0u; i < skeleton->numJoints; ++i) {
+    for (auto i = offset; i < skeleton->numJoints; ++i) {
         if (skeleton->joints[i].parent != -1) {
             auto& parent = skeleton->joints[skeleton->joints[i].parent];
             math::MultiplyMatricesCM(parent.globalTransform, skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
-        }
-        else {
-            math::Copy4x4FloatMatrixCM(skeleton->joints[i].localTransform, skeleton->joints[i].globalTransform);
         }
     }
 }
@@ -1265,16 +1262,37 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     if (!tPose) {
         ComputeLocalPoses(&g_data.testSkeleton, &g_data.animController);
     }
+
+    static math::Vec3 rootPos;
+    //
+    {   // root bone
+        static math::Vec3 objectPosition;
+        static math::Vec3 lastPosition;
+        {   // extract root motion: compute world space root joint transform
+            rootPos = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[0].localTransform, 3).xyz;
+            rootPos = math::TransformPositionCM(rootPos, g_data.objectData.transform);
+
+            auto dist = rootPos - lastPosition;
+
+            objectPosition += dist;
+            lastPosition = objectPosition;
+            math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
+
+            math::SetTranslation4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, math::Vec3());
+        }
+        math::Copy4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, g_data.testSkeleton.joints[0].globalTransform);
+    }
     //
     if (transformHierarchy) {
-        TransformHierarchy(&g_data.testSkeleton);
+        TransformHierarchy(&g_data.testSkeleton, 1);
     }
     else {
         for (auto i = 0u; i < g_data.testSkeleton.numJoints; ++i) {
             math::Copy4x4FloatMatrixCM(g_data.testSkeleton.joints[i].localTransform, g_data.testSkeleton.joints[i].globalTransform);
         }
     }
-
+    //
+    //
     GetSkinningTransforms(&g_data.testSkeleton, &g_data.skeletonData);
     ///
     //
@@ -1412,6 +1430,8 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             boneV = math::TransformPositionCM(boneV, g_data.objectData.transform);
             boneW = math::TransformPositionCM(boneW, g_data.objectData.transform);
 
+            auto rootScreenPos = WorldToScreen(rootPos);
+            drawList->AddCircleFilled(ImVec2(rootScreenPos.x, rootScreenPos.y), 5.0f, ImColor(1.0f, 0.0f, 1.0f));
 
             auto boneUPos = WorldToScreen(boneU);
             auto boneVPos = WorldToScreen(boneV);
