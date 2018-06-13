@@ -520,7 +520,10 @@ struct AnimationStateTransition
     int32_t sourceStateIdx  = -1;
     int32_t targetStateIdx  = -1;
     float   t               = 0.0f;
-    float   speed           = 0.0f;
+    float   duration        = 0.0f;
+
+    float   sourceOverlap   = 0.0f;
+    float   targetOverlap   = 0.0f;
 };
 
 #define MAX_NUM_ANIM_STATES 64
@@ -734,8 +737,9 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationStateMachine* animController
             ComputeLocalJointPose(jointIdx, sourceClip, sourceState.animationTime, &sourceTranslation, &sourceRotation);
             ComputeLocalJointPose(jointIdx, targetClip, targetState.animationTime, &targetTranslation, &targetRotation);
             
-            translation = math::Lerp(sourceTranslation, targetTranslation, transition.t);
-            rotation = math::Slerp(sourceRotation, targetRotation, transition.t);
+            auto alpha = transition.t / transition.duration;
+            translation = math::Lerp(sourceTranslation, targetTranslation, alpha);
+            rotation = math::Slerp(sourceRotation, targetRotation, alpha);
         }
 
         //
@@ -1108,6 +1112,12 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
             auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
             transition.sourceStateIdx = j;
             transition.targetStateIdx = i;
+
+            transition.duration = 0.5f;
+            transition.sourceOverlap = 0.15f;
+            transition.targetOverlap = 0.15f;
+
+
             transition.t = 0.0f;
         }
     }
@@ -1216,39 +1226,47 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     static float animSpeedMod = 1.0f;
     static bool animate = true;
     auto speed = (1.0f) * ImGui::GetIO().DeltaTime;
-    static int nextTransition = 0;
     static bool didSwitchAnimation = false;
 
-    if (g_data.animController.states[g_data.animController.currentStateIdx].animationTime < g_data.animController.states[g_data.animController.currentStateIdx].animClip->duration) {
-        g_data.animController.states[g_data.animController.currentStateIdx].animationTime += animate ? animSpeedMod * speed : 0.0f;
-
-        if (g_data.animController.currentTransitionIdx < 0 && g_data.animController.states[g_data.animController.currentStateIdx].animationTime >= g_data.animController.states[g_data.animController.currentStateIdx].animClip->duration * 0.75f) {
-            
-            auto diff = g_data.animController.states[g_data.animController.currentStateIdx].animClip->duration - g_data.animController.states[g_data.animController.currentStateIdx].animationTime;
-            
-            g_data.animController.currentTransitionIdx = nextTransition;
-            g_data.animController.transitions[g_data.animController.currentTransitionIdx].speed = 1.0f / diff;
-            g_data.animController.transitions[g_data.animController.currentTransitionIdx].t = 0.0f;
-            g_data.animController.states[g_data.animController.transitions[g_data.animController.currentTransitionIdx].targetStateIdx].animationTime = 0.0f;
-            nextTransition = (nextTransition + 1) % g_data.animController.numTransitions;
+    auto FindTransitionCandidate = [](AnimationStateMachine* controller, float sourceTimeDiff) -> int
+    {
+        for (uint32_t i = 0; i < controller->numTransitions; ++i) {
+            auto& transition = controller->transitions[i];
+            if (transition.sourceStateIdx == controller->currentStateIdx && transition.sourceOverlap >= sourceTimeDiff) { return i; }
         }
+        return -1;
+    };
 
-        if (g_data.animController.currentTransitionIdx >= 0 && g_data.animController.transitions[g_data.animController.currentTransitionIdx].t >= 0.55f) {
-            auto targetIdx = g_data.animController.transitions[g_data.animController.currentTransitionIdx].targetStateIdx;
-            auto& targetState = g_data.animController.states[targetIdx];
-            targetState.animationTime += animate ? animSpeedMod * speed : 0.0f;
-        }
+    auto& currentState = g_data.animController.states[g_data.animController.currentStateIdx];
+    if (currentState.animationTime < currentState.animClip->duration) {
+        currentState.animationTime += animate ? animSpeedMod * speed : 0.0f; 
+    }
+
+    auto timeDiff = currentState.animClip->duration - currentState.animationTime;
+    auto transitionCandidate = FindTransitionCandidate(&g_data.animController, timeDiff);
+    if (g_data.animController.currentTransitionIdx < 0 && transitionCandidate != -1) {
+        g_data.animController.currentTransitionIdx = transitionCandidate;
+        g_data.animController.transitions[g_data.animController.currentTransitionIdx].t = 0.0f;
+        g_data.animController.states[g_data.animController.transitions[g_data.animController.currentTransitionIdx].targetStateIdx].animationTime = 0.0f;
     }
 
     if(g_data.animController.currentTransitionIdx >= 0) {
         auto& transition = g_data.animController.transitions[g_data.animController.currentTransitionIdx];
-        transition.t += animate ? transition.speed * ImGui::GetIO().DeltaTime * animSpeedMod : 0.0f;
-        if (transition.t >= 1.0f) {
+        transition.t += animate ? ImGui::GetIO().DeltaTime * animSpeedMod : 0.0f;
+
+        if (transition.t >= transition.duration) {
             g_data.animController.currentTransitionIdx = -1;
-           
+
             g_data.animController.currentStateIdx = transition.targetStateIdx;
             //g_data.animController.states[g_data.animController.currentStateIdx].animationTime = 0.0f;
             didSwitchAnimation = true;
+        }
+        else {
+            if (transition.targetOverlap >= (transition.duration - transition.t)) {
+                auto targetIdx = transition.targetStateIdx;
+                auto& targetState = g_data.animController.states[targetIdx];
+                targetState.animationTime += animate ? animSpeedMod * speed : 0.0f;
+            }
         }
     }
 
@@ -1372,14 +1390,14 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             auto& transition = controller.transitions[controller.currentTransitionIdx];
 
             ImGui::Text("Transition (#%i -> #%i)", transition.sourceStateIdx, transition.targetStateIdx);
-            ImGui::ProgressBar(transition.t);
+            ImGui::ProgressBar(transition.t / transition.duration);
 
             auto& targetState = controller.states[transition.targetStateIdx];
             ImGui::Text("Target State (#%i)", transition.targetStateIdx);
-            ImGui::ProgressBar(targetState.animationTime);
+            ImGui::ProgressBar(targetState.animationTime / targetState.animClip->duration);
         }
         else {
-            ImGui::Text("Next Transition: #%i", nextTransition);
+            //ImGui::Text("Next Transition: #%i", nextTransition);
         }
 
     } ImGui::End();
