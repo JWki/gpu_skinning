@@ -501,7 +501,7 @@ struct BoneTrack
     Keyframe*   keyframes = nullptr;
 };
 
-struct Animation
+struct AnimationClip
 {
     char*           name  = "";
     uint32_t        numTracks = 0;
@@ -511,8 +511,30 @@ struct Animation
 
 struct AnimationState
 {
-    Animation*  currentAnim;
-    float       animationTime = 0.0f;
+    AnimationClip*  animClip = nullptr;
+    float           animationTime = 0.0f;
+};
+
+struct AnimationStateTransition
+{
+    int32_t sourceStateIdx  = -1;
+    int32_t targetStateIdx  = -1;
+    float   t               = 0.0f;
+    float   speed           = 0.0f;
+};
+
+#define MAX_NUM_ANIM_STATES 64
+#define MAX_NUM_ANIM_TRANSITIONS 128
+struct AnimationStateMachine
+{
+    int32_t    currentStateIdx          = -1;
+    int32_t    currentTransitionIdx     = -1;
+
+    uint32_t    numStates               = 0;
+    uint32_t    numTransitions          = 0;
+
+    AnimationState              states[MAX_NUM_ANIM_STATES];
+    AnimationStateTransition    transitions[MAX_NUM_ANIM_TRANSITIONS];
 };
 
 ///
@@ -536,7 +558,7 @@ int GetBoneWithImportId(Skeleton* skeleton, int importId)
     return -1;
 }
 ///
-bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animation* outAnimations, uint32_t* outNumAnimations)
+bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, AnimationClip* outAnimations, uint32_t* outNumAnimations)
 {
     return false;
     //uint32_t fileSize;
@@ -586,7 +608,7 @@ bool ImportAnimationFromSGA(const char* path, Skeleton* targetSkeleton, Animatio
 
 
 //
-bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, Animation* outAnimation)
+bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, AnimationClip* outAnimation)
 {
     uint32_t fileSize;
     ByteStream stream;
@@ -601,7 +623,7 @@ bool ImportGTAnimation(const char* path, Skeleton* targetSkeleton, Animation* ou
     assert(version == 1);
 
 
-    Animation& anim = *outAnimation;
+    AnimationClip& anim = *outAnimation;
     auto nameLen = stream.Read<uint32_t>();
     anim.name = (char*)malloc(nameLen + 1);
     memset(anim.name, 0x0, nameLen + 1);
@@ -651,70 +673,94 @@ void ResetLocalTransforms(Skeleton* skeleton)
 }
 
 
-void ComputeLocalPoses(Skeleton* skeleton, AnimationState* animState, bool didLoop)
+void ComputeLocalPoses(Skeleton* skeleton, AnimationStateMachine* animController)
 {
-    auto& anim = *animState->currentAnim;
-    auto time = animState->animationTime;
-    // @NOTE we assume that the skeleton is sorted so parents are always evaluated before their children
-    // and also local transforms have been reset at least once so there's no BS in them and we can do this in a single loop
-    for (uint32_t i = 0; i < skeleton->numJoints; ++i) {
-        
-        math::Vec3 translation;
-        math::Vec4 rotation;
-
-        // translation
-        if (anim.tracks[i].numKeyframes != 0)
+    auto ComputeLocalJointPose = [](uint32_t jointIdx, AnimationClip* clip, float time, math::Vec3* outTranslation, math::Vec4* outRotation) -> void
+    {
+        assert(outTranslation != nullptr && outRotation != nullptr);
+        if (clip->tracks[jointIdx].numKeyframes != 0)
         {
-            Keyframe* prevKeyframe = anim.tracks[i].keyframes;
-            Keyframe* nextKeyframe = anim.tracks[i].keyframes;
-            for (uint32_t k = 0; k < anim.tracks[i].numKeyframes; ++k) {
-                nextKeyframe = anim.tracks[i].keyframes + k;
+            Keyframe* prevKeyframe = clip->tracks[jointIdx].keyframes;
+            Keyframe* nextKeyframe = clip->tracks[jointIdx].keyframes;
+            for (uint32_t k = 0; k < clip->tracks[jointIdx].numKeyframes; ++k) {
+                nextKeyframe = clip->tracks[jointIdx].keyframes + k;
                 if (nextKeyframe->timeStamp > time) {
                     break;
                 }
-                prevKeyframe = anim.tracks[i].keyframes + k;
+                prevKeyframe = clip->tracks[jointIdx].keyframes + k;
             }
             if (prevKeyframe != nextKeyframe) {
                 float alpha = (time - prevKeyframe->timeStamp) / (nextKeyframe->timeStamp - prevKeyframe->timeStamp);
-                translation = math::Lerp(prevKeyframe->position, nextKeyframe->position, alpha);
-                rotation = math::Slerp(prevKeyframe->rotation, nextKeyframe->rotation, alpha);
+                *outTranslation = math::Lerp(prevKeyframe->position, nextKeyframe->position, alpha);
+                *outRotation = math::Slerp(prevKeyframe->rotation, nextKeyframe->rotation, alpha);
             }
             else {
-                translation = prevKeyframe->position;
-                rotation = prevKeyframe->rotation;
+                *outTranslation = prevKeyframe->position;
+                *outRotation = prevKeyframe->rotation;
             }
             //translation = prevKeyframe->value;
             //translation = math::Vec3();
+        } 
+    };
+
+    // @NOTE we assume that the skeleton is sorted so parents are always evaluated before their children
+    // and also local transforms have been reset at least once so there's no BS in them and we can do this in a single loop
+    for (uint32_t jointIdx = 0; jointIdx < skeleton->numJoints; ++jointIdx)
+    {
+        math::Vec3 translation;
+        math::Vec4 rotation;
+
+        if (animController->currentTransitionIdx < 0)    // just play the current animation
+        {
+            auto& currentState = animController->states[animController->currentStateIdx];
+            auto anim = currentState.animClip;
+            auto time = currentState.animationTime;
+
+            ComputeLocalJointPose(jointIdx, anim, time, &translation, &rotation);
+        }
+        else {
+            // compute both source and target poses, then blend between them
+            auto& transition = animController->transitions[animController->currentTransitionIdx];
+            auto& sourceState = animController->states[transition.sourceStateIdx];
+            auto& targetState = animController->states[transition.targetStateIdx];
+            auto sourceClip = sourceState.animClip;
+            auto targetClip = targetState.animClip;
+            math::Vec3 sourceTranslation;
+            math::Vec4 sourceRotation;
+
+            math::Vec3 targetTranslation;
+            math::Vec4 targetRotation;
+
+            ComputeLocalJointPose(jointIdx, sourceClip, sourceState.animationTime, &sourceTranslation, &sourceRotation);
+            ComputeLocalJointPose(jointIdx, targetClip, targetState.animationTime, &targetTranslation, &targetRotation);
+            
+            translation = math::Lerp(sourceTranslation, targetTranslation, transition.t);
+            rotation = math::Slerp(sourceRotation, targetRotation, transition.t);
         }
 
-        // @NOTE
-        //if (didLoop) {
-        //    // the previous keyframe will be the last keyframe in the track
-        //    prevKeyframe = &anim.tracks[i].keyframes[anim.tracks[i].numKeyframes - 1]; // @NOTE this is a bit hacky tho
-        //    alpha = time;
-        //}
-
-        // 
+        //
+        //  combine into matrix
         float rot[16];
         float transl[16];
 
         QuatToMatrix(rotation, rot);
         math::Make4x4FloatTranslationMatrixCM(transl, translation);
-      
+
         float localPose[16];
         math::MultiplyMatricesCM(transl, rot, localPose);
 
-        if (i != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is going on
+        if (jointIdx != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is going on
             float transl[16];   // @NOTE THIS IS SUPER WEIRD 
-            math::Make4x4FloatTranslationMatrixCM(transl, math::Get4x4FloatMatrixColumnCM(skeleton->joints[i].bindpose, 3).xyz);
-            math::MultiplyMatricesCM(transl, localPose, skeleton->joints[i].localTransform);
+            math::Make4x4FloatTranslationMatrixCM(transl, math::Get4x4FloatMatrixColumnCM(skeleton->joints[jointIdx].bindpose, 3).xyz);
+            math::MultiplyMatricesCM(transl, localPose, skeleton->joints[jointIdx].localTransform);
             //math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
         }
         else {
-            math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
+            math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[jointIdx].localTransform);
         }
-
     }
+    
+    
     //
 }
 
@@ -752,9 +798,8 @@ struct AppData
     Mesh        testMesh;
     Shader      shader;
 
-    uint32_t        currentAnim = 0;
-    Animation       testAnim[128];
-    AnimationState  animState;
+    AnimationClip           testAnim[128];
+    AnimationStateMachine   animController;
 
     ID3D11Buffer* frameConstantBuffer;
     ID3D11Buffer* objectConstantBuffer;
@@ -1053,9 +1098,28 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         printf("loaded anim: %s\n", g_data.testAnim[currentImportAnimation].name);
         currentImportAnimation++;
     }
-    g_data.animState.animationTime = 0.0f;
-    g_data.currentAnim = 0;
-    g_data.animState.currentAnim = &g_data.testAnim[0];
+
+    g_data.animController.numStates = numAnims;
+    g_data.animController.currentStateIdx = 0;
+
+    for (int i = 0; i < numAnims; ++i) {
+        g_data.animController.states[i].animationTime = 0.0f;
+        g_data.animController.states[i].animClip = &g_data.testAnim[i];
+    
+        if (i != 0) {
+            auto j = i - 1;
+            auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
+            transition.sourceStateIdx = j;
+            transition.targetStateIdx = i;
+            transition.t = 0.0f;
+        }
+    }
+    {
+        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
+        transition.sourceStateIdx = numAnims -1;
+        transition.targetStateIdx = 0;
+        transition.t = 0.0f;
+    }
 
     {   ///
         {   // frame constant data
@@ -1155,24 +1219,41 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     static float animSpeedMod = 1.0f;
     static bool animate = true;
     static bool rootMotion = false;
-    static bool sequence = true;
-    static bool loop = true;
     auto speed = (1.0f) * ImGui::GetIO().DeltaTime;
-    bool didLoop = false;   // for root motion 
+    static int nextTransition = 0;
     static bool didSwitchAnimation = false;
-    g_data.animState.animationTime += animate ? animSpeedMod * speed : 0.0f;
-    if (g_data.animState.animationTime > g_data.animState.currentAnim->duration && loop) {
-        g_data.animState.animationTime -= g_data.animState.currentAnim->duration;
-        didLoop = true;
+
+    if (g_data.animController.states[g_data.animController.currentStateIdx].animationTime < g_data.animController.states[g_data.animController.currentStateIdx].animClip->duration) {
+        g_data.animController.states[g_data.animController.currentStateIdx].animationTime += animate ? animSpeedMod * speed : 0.0f;
+
+        if (g_data.animController.currentTransitionIdx < 0 && g_data.animController.states[g_data.animController.currentStateIdx].animationTime >= g_data.animController.states[g_data.animController.currentStateIdx].animClip->duration * 0.75f) {
+            
+            auto diff = g_data.animController.states[g_data.animController.currentStateIdx].animClip->duration - g_data.animController.states[g_data.animController.currentStateIdx].animationTime;
+            
+            g_data.animController.currentTransitionIdx = nextTransition;
+            g_data.animController.transitions[g_data.animController.currentTransitionIdx].speed = 1.0f / diff;
+            g_data.animController.transitions[g_data.animController.currentTransitionIdx].t = 0.0f;
+            g_data.animController.states[g_data.animController.transitions[g_data.animController.currentTransitionIdx].targetStateIdx].animationTime = 0.0f;
+            nextTransition = (nextTransition + 1) % g_data.animController.numTransitions;
+        }
+
+        if (g_data.animController.currentTransitionIdx >= 0 && g_data.animController.transitions[g_data.animController.currentTransitionIdx].t >= 0.55f) {
+            auto targetIdx = g_data.animController.transitions[g_data.animController.currentTransitionIdx].targetStateIdx;
+            auto& targetState = g_data.animController.states[targetIdx];
+            targetState.animationTime += animate ? animSpeedMod * speed : 0.0f;
+        }
     }
-    if (g_data.animState.animationTime < 0.0f && loop) {
-        g_data.animState.animationTime += g_data.animState.currentAnim->duration;
-        didLoop = true;
-    }
-    if (didLoop && sequence) {
-        g_data.currentAnim = (g_data.currentAnim + 1) % numAnims;
-        g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
-        didSwitchAnimation = true;
+
+    if(g_data.animController.currentTransitionIdx >= 0) {
+        auto& transition = g_data.animController.transitions[g_data.animController.currentTransitionIdx];
+        transition.t += animate ? transition.speed * ImGui::GetIO().DeltaTime * animSpeedMod : 0.0f;
+        if (transition.t >= 1.0f) {
+            g_data.animController.currentTransitionIdx = -1;
+           
+            g_data.animController.currentStateIdx = transition.targetStateIdx;
+            //g_data.animController.states[g_data.animController.currentStateIdx].animationTime = 0.0f;
+            didSwitchAnimation = true;
+        }
     }
 
     //ImGui::ShowTestWindow();
@@ -1183,7 +1264,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ResetLocalTransforms(&g_data.testSkeleton);
     animate = animate && !tPose;
     if (!tPose) {
-        ComputeLocalPoses(&g_data.testSkeleton, &g_data.animState, didLoop);
+        ComputeLocalPoses(&g_data.testSkeleton, &g_data.animController);
     }
 
     {   // override local poses here
@@ -1192,17 +1273,15 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         if(rootMotion)
         {   // root motion
             auto& rootJoint = g_data.testSkeleton.joints[0];
-            auto numKeyframes = g_data.animState.currentAnim->tracks[0].numKeyframes;
-            auto& firstKeyframe = g_data.animState.currentAnim->tracks[0].keyframes[0];
+            auto numKeyframes = g_data.animController.states[g_data.animController.currentStateIdx].animClip->tracks[0].numKeyframes;
+            auto& firstKeyframe = g_data.animController.states[g_data.animController.currentStateIdx].animClip->tracks[0].keyframes[0];
             static auto initialPosition = firstKeyframe.position;
             static auto sourcePosition = initialPosition;
             if (didSwitchAnimation) {
                 initialPosition = firstKeyframe.position;
                 didSwitchAnimation = false;
             }
-            if (didLoop) {
-                sourcePosition = initialPosition;
-            }
+
             auto currentPosition = math::Get4x4FloatMatrixColumnCM(rootJoint.localTransform, 3).xyz;
             auto dist = currentPosition - sourcePosition;
             math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, initialPosition);
@@ -1237,30 +1316,32 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ///
     //
     static int selectedJoint = -1;
+    auto& animClip = g_data.animController.states[g_data.animController.currentStateIdx].animClip;
     if (selectedJoint != -1) {
+
         ImGui::PlotLines("X Pos Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].position.x;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].position.x;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
         ImGui::PlotLines("Y Pos Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].position.y;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].position.y;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
         ImGui::PlotLines("Z Pos Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].position.z;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].position.z;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -2.0f, 2.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
 
         ImGui::PlotLines("X Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.x;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].rotation.x;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::PlotLines("Y Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.y;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].rotation.y;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::PlotLines("Z Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.z;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].rotation.z;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::PlotLines("w Rot Curve", [](void* data, int idx) -> float {
-            return static_cast<Animation*>(data)->tracks[0].keyframes[idx].rotation.w;
-        }, g_data.animState.currentAnim, g_data.animState.currentAnim->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
+            return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].rotation.w;
+        }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
     }
     if (ImGui::Begin("Skeleton")) {
@@ -1269,16 +1350,14 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::Checkbox("Transform Hierarchy", &transformHierarchy);
         ImGui::Checkbox("Animate", &animate);
         ImGui::Checkbox("Root Motion", &rootMotion);
-        ImGui::Checkbox("Loop", &loop);
-        ImGui::Checkbox("Sequence", &sequence);
         ImGui::SliderFloat("Playback Speed Modifier", &animSpeedMod, -1.0f, 1.0f);
 
-        if (ImGui::BeginCombo("Animation Clip", g_data.testAnim[g_data.currentAnim].name)) {
+        if (ImGui::BeginCombo("Animation Clip", animClip->name)) {
             for (uint32_t i = 0; i < numAnims; ++i) {
                 ImGui::PushID(i);
-                if (ImGui::Selectable(g_data.testAnim[i].name, i == g_data.currentAnim)) {
-                    g_data.currentAnim = i;
-                    g_data.animState.currentAnim = &g_data.testAnim[g_data.currentAnim];
+                if (ImGui::Selectable(g_data.testAnim[i].name, i == g_data.animController.currentStateIdx)) {
+                    g_data.animController.currentStateIdx = i;
+                    g_data.animController.states[i].animationTime = 0.0f;
                     didSwitchAnimation = true;
                 }
                 ImGui::PopID();
@@ -1300,6 +1379,30 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         }
     } ImGui::End();
    
+    if (ImGui::Begin("Animation State Machine")) {
+
+        auto& controller = g_data.animController;
+
+        auto& currentState = controller.states[controller.currentStateIdx];
+
+        ImGui::Text("Current State (#%i)", controller.currentStateIdx);
+        ImGui::ProgressBar(currentState.animationTime / currentState.animClip->duration);
+        
+        if (controller.currentTransitionIdx >= 0) {
+            auto& transition = controller.transitions[controller.currentTransitionIdx];
+
+            ImGui::Text("Transition (#%i -> #%i)", transition.sourceStateIdx, transition.targetStateIdx);
+            ImGui::ProgressBar(transition.t);
+
+            auto& targetState = controller.states[transition.targetStateIdx];
+            ImGui::Text("Target State (#%i)", transition.targetStateIdx);
+            ImGui::ProgressBar(targetState.animationTime);
+        }
+        else {
+            ImGui::Text("Next Transition: #%i", nextTransition);
+        }
+
+    } ImGui::End();
 
     auto canvasFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
