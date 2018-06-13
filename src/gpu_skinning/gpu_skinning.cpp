@@ -1017,12 +1017,12 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 
 
 const char* animFiles[] = { "assets/knight_idle.gtanimclip", "assets/knight_walk.gtanimclip",
-                            "assets/knight_run_default.gtanimclip", "assets/knight_run_fast.gtanimclip", 
+                            "assets/knight_run_default.gtanimclip", "assets/knight_run_fast.gtanimclip",
                             "assets/knight_run_slide.gtanimclip", "assets/knight_draw.gtanimclip",
-                            "assets/knight_onehand_combo.gtanimclip", "assets/knight_sheathe.gtanimclip", 
+                            "assets/knight_onehand_combo.gtanimclip", "assets/knight_sheathe.gtanimclip",
                             "assets/knight_draw_twohand.gtanimclip",
-                            "assets/knight_twohand_combo.gtanimclip", "assets/knight_sheathe_twohanded.gtanimclip",
-                            "assets/knight_dance.gtanimclip" };
+                            "assets/knight_twohand_combo.gtanimclip", "assets/knight_sheathe_twohanded.gtanimclip", };
+                            //"assets/knight_dance.gtanimclip" };
 //const char* animFiles[] = { "assets/akai_idle.gtanimclip", "assets/akai_walking.gtanimclip" };
 const int numAnims = ARRAYSIZE(animFiles);
 ///
@@ -1218,7 +1218,6 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ///
     static float animSpeedMod = 1.0f;
     static bool animate = true;
-    static bool rootMotion = false;
     auto speed = (1.0f) * ImGui::GetIO().DeltaTime;
     static int nextTransition = 0;
     static bool didSwitchAnimation = false;
@@ -1266,42 +1265,6 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     if (!tPose) {
         ComputeLocalPoses(&g_data.testSkeleton, &g_data.animController);
     }
-
-    {   // override local poses here
-        
-        static math::Vec3 objectPosition;
-        if(rootMotion)
-        {   // root motion
-            auto& rootJoint = g_data.testSkeleton.joints[0];
-            auto numKeyframes = g_data.animController.states[g_data.animController.currentStateIdx].animClip->tracks[0].numKeyframes;
-            auto& firstKeyframe = g_data.animController.states[g_data.animController.currentStateIdx].animClip->tracks[0].keyframes[0];
-            static auto initialPosition = firstKeyframe.position;
-            static auto sourcePosition = initialPosition;
-            if (didSwitchAnimation) {
-                initialPosition = firstKeyframe.position;
-                didSwitchAnimation = false;
-            }
-
-            auto currentPosition = math::Get4x4FloatMatrixColumnCM(rootJoint.localTransform, 3).xyz;
-            auto dist = currentPosition - sourcePosition;
-            math::SetTranslation4x4FloatMatrixCM(rootJoint.localTransform, initialPosition);
-            sourcePosition = currentPosition;
-            //dist.x = 0.0f;
-            //dist.z = 0.0f;
-            objectPosition += dist;
-        } else {
-            objectPosition = math::Vec3();
-        }
-        math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
-        //math::Set4x4FloatMatrixValueCM(g_data.objectData.transform, 0, 0, 0.2f);
-        //math::Set4x4FloatMatrixValueCM(g_data.objectData.transform, 1, 1, 0.2f);
-        //math::Set4x4FloatMatrixValueCM(g_data.objectData.transform, 2, 2, 0.2f);
-        ImGui::Text("x = %f", objectPosition.x);
-        ImGui::Text("y = %f", objectPosition.y);
-        ImGui::Text("z = %f", objectPosition.z);
-
-    }
-
     //
     if (transformHierarchy) {
         TransformHierarchy(&g_data.testSkeleton);
@@ -1349,7 +1312,6 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::Checkbox("Show Skeleton", &showSkeleton);
         ImGui::Checkbox("Transform Hierarchy", &transformHierarchy);
         ImGui::Checkbox("Animate", &animate);
-        ImGui::Checkbox("Root Motion", &rootMotion);
         ImGui::SliderFloat("Playback Speed Modifier", &animSpeedMod, -1.0f, 1.0f);
 
         if (ImGui::BeginCombo("Animation Clip", animClip->name)) {
