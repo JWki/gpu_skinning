@@ -231,6 +231,8 @@ struct SkeletonConstantData
     float boneTransform[MAX_NUM_BONES][16];
 };
 ///
+
+
 struct Joint
 {
     float   bindpose[16];   // local space bindpose
@@ -239,6 +241,12 @@ struct Joint
     float   localTransform[16];
     int     importId;   // @HACK
     int     parent;
+};
+
+struct JointTransform
+{
+    math::Vec3 translation;
+    math::Vec4 rotation;
 };
 
 struct Skeleton
@@ -481,6 +489,7 @@ bool ImportGTSkeleton(const char* path, Skeleton* outSkeleton)
         }
         math::Inverse4x4FloatMatrixCM(outSkeleton->bindpose[i], outSkeleton->invBindpose[i]);
         math::Inverse4x4FloatMatrixCM(joint.bindpose, joint.invBindpose);
+
     }
 
     return true;
@@ -492,7 +501,6 @@ struct Keyframe
     float           timeStamp;
     math::Vec3      position;
     math::Vec4      rotation;
-
 };
 
 struct BoneTrack
@@ -509,42 +517,44 @@ struct AnimationClip
     float           duration = 0.0f;
 };
 
-struct AnimationState
+
+
+struct AnimationLayer
 {
-    AnimationClip*  animClip = nullptr;
-    float           animationTime = 0.0f;
-};
-
-struct AnimationStateTransition
-{
-    int32_t sourceStateIdx  = -1;
-    int32_t targetStateIdx  = -1;
-    float   t               = 0.0f;
-    float   duration        = 0.0f;
-
-    float   sourceOverlap   = 0.0f;
-    float   targetOverlap   = 0.0f;
-};
-
-#define MAX_NUM_ANIM_STATES 64
-#define MAX_NUM_ANIM_TRANSITIONS 128
-struct AnimationStateMachine
-{
-    int32_t    currentStateIdx          = -1;
-    int32_t    currentTransitionIdx     = -1;
-
-    uint32_t    numStates               = 0;
-    uint32_t    numTransitions          = 0;
-
-    AnimationState              states[MAX_NUM_ANIM_STATES];
-    AnimationStateTransition    transitions[MAX_NUM_ANIM_TRANSITIONS];
+    JointTransform  transforms[MAX_NUM_BONES];
 };
 
 
-struct CharacterController
+#define MAX_NUM_ANIMATION_LAYERS 32
+struct AnimationStack
 {
-    float speed = 0.0f;
+    Skeleton*       referenceSkeleton = nullptr;
+    AnimationLayer  layers[MAX_NUM_ANIMATION_LAYERS];
 };
+
+
+void ComputeLocalPoses(AnimationLayer* target, Skeleton* referenceSkeleton, AnimationClip* clip, float time);
+
+
+void PlayClip(AnimationStack* stack, AnimationClip* clip, uint32_t targetLayerIdx, float t)
+{
+    auto layer = &stack->layers[targetLayerIdx];
+    ComputeLocalPoses(layer, stack->referenceSkeleton, clip, t);
+}
+
+void TwoWayBlend(AnimationStack* stack, uint32_t layerAIdx, uint32_t layerBIdx, uint32_t targetLayerIdx, float a)
+{
+    auto target = &stack->layers[targetLayerIdx];
+    auto layerA = &stack->layers[layerAIdx];
+    auto layerB = &stack->layers[layerBIdx];
+
+    for (uint32_t i = 0; i < stack->referenceSkeleton->numJoints; ++i)
+    {
+        target->transforms[i].translation = math::Lerp(layerA->transforms[i].translation, layerB->transforms[i].translation, a);
+        target->transforms[i].rotation = math::Slerp(layerA->transforms[i].rotation, layerB->transforms[i].rotation, a);
+    }
+}
+
 ///
 int GetBoneWithName(Skeleton* skeleton, const char* name)
 {
@@ -681,7 +691,7 @@ void ResetLocalTransforms(Skeleton* skeleton)
 }
 
 
-void ComputeLocalPoses(Skeleton* skeleton, AnimationStateMachine* animController)
+void ComputeLocalPoses(AnimationLayer* target, Skeleton* referenceSkeleton, AnimationClip* clip, float time)
 {
     auto ComputeLocalJointPose = [](uint32_t jointIdx, AnimationClip* clip, float time, math::Vec3* outTranslation, math::Vec4* outRotation) -> void
     {
@@ -710,67 +720,38 @@ void ComputeLocalPoses(Skeleton* skeleton, AnimationStateMachine* animController
             //translation = math::Vec3();
         } 
     };
-
-    // @NOTE we assume that the skeleton is sorted so parents are always evaluated before their children
-    // and also local transforms have been reset at least once so there's no BS in them and we can do this in a single loop
-    for (uint32_t jointIdx = 0; jointIdx < skeleton->numJoints; ++jointIdx)
+    //
+    for (uint32_t jointIdx = 0; jointIdx < referenceSkeleton->numJoints; ++jointIdx)
     {
-        math::Vec3 translation;
-        math::Vec4 rotation;
+        ComputeLocalJointPose(jointIdx, clip, time, &target->transforms[jointIdx].translation, &target->transforms[jointIdx].rotation);
+    }
+    //
+}
 
-        if (animController->currentTransitionIdx < 0)    // just play the current animation
-        {
-            auto& currentState = animController->states[animController->currentStateIdx];
-            auto anim = currentState.animClip;
-            auto time = currentState.animationTime;
-
-            ComputeLocalJointPose(jointIdx, anim, time, &translation, &rotation);
-        }
-        else {
-            // compute both source and target poses, then blend between them
-            auto& transition = animController->transitions[animController->currentTransitionIdx];
-            auto& sourceState = animController->states[transition.sourceStateIdx];
-            auto& targetState = animController->states[transition.targetStateIdx];
-            auto sourceClip = sourceState.animClip;
-            auto targetClip = targetState.animClip;
-            math::Vec3 sourceTranslation;
-            math::Vec4 sourceRotation;
-
-            math::Vec3 targetTranslation;
-            math::Vec4 targetRotation;
-
-            ComputeLocalJointPose(jointIdx, sourceClip, sourceState.animationTime, &sourceTranslation, &sourceRotation);
-            ComputeLocalJointPose(jointIdx, targetClip, targetState.animationTime, &targetTranslation, &targetRotation);
-            
-            auto alpha = transition.t / transition.duration;
-            translation = math::Lerp(sourceTranslation, targetTranslation, alpha);
-            rotation = math::Slerp(sourceRotation, targetRotation, alpha);
-        }
-
+void ApplyLayerToSkeleton(Skeleton* skeleton, AnimationLayer* layer)
+{
+    for (uint32_t i = 0; i < skeleton->numJoints; ++i) {
         //
         //  combine into matrix
         float rot[16];
         float transl[16];
 
-        QuatToMatrix(rotation, rot);
-        math::Make4x4FloatTranslationMatrixCM(transl, translation);
+        QuatToMatrix(layer->transforms[i].rotation, rot);
+        math::Make4x4FloatTranslationMatrixCM(transl, layer->transforms[i].translation);
 
         float localPose[16];
         math::MultiplyMatricesCM(transl, rot, localPose);
 
-        if (jointIdx != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is going on
+        if (i != 0) {   // @HACK what the fuck? why is this only necessary for non-root? what is going on
             float transl[16];   // @NOTE THIS IS SUPER WEIRD 
-            math::Make4x4FloatTranslationMatrixCM(transl, math::Get4x4FloatMatrixColumnCM(skeleton->joints[jointIdx].bindpose, 3).xyz);
-            math::MultiplyMatricesCM(transl, localPose, skeleton->joints[jointIdx].localTransform);
+            math::Make4x4FloatTranslationMatrixCM(transl, math::Get4x4FloatMatrixColumnCM(skeleton->joints[i].bindpose, 3).xyz);
+            math::MultiplyMatricesCM(transl, localPose, skeleton->joints[i].localTransform);
             //math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
         }
         else {
-            math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[jointIdx].localTransform);
+            math::Copy4x4FloatMatrixCM(localPose, skeleton->joints[i].localTransform);
         }
     }
-    
-    
-    //
 }
 
 void TransformHierarchy(Skeleton* skeleton, uint32_t offset)
@@ -804,9 +785,8 @@ struct AppData
     Mesh        testMesh;
     Shader      shader;
 
-    AnimationClip           testAnim[128];
-    AnimationStateMachine   animController;
-    CharacterController     characterController;
+    AnimationClip   testAnim[128];
+    AnimationStack  animStack;
 
     ID3D11Buffer* frameConstantBuffer;
     ID3D11Buffer* objectConstantBuffer;
@@ -1024,7 +1004,8 @@ bool ImportSGM(const char* path, Mesh* outMesh, ID3D11Device* device)
 }
 
 
-const char* animFiles[] = { "assets/knight_idle.gtanimclip", "assets/knight_walk.gtanimclip",
+const char* animFiles[] = { "assets/knight_idle.gtanimclip", "assets/knight_crouch_idle.gtanimclip", 
+                            "assets/knight_walk.gtanimclip",
                             "assets/knight_run_default.gtanimclip", "assets/knight_run_fast.gtanimclip",
                             "assets/knight_run_slide.gtanimclip", "assets/knight_draw.gtanimclip",
                             "assets/knight_onehand_combo.gtanimclip", "assets/knight_sheathe.gtanimclip",
@@ -1051,7 +1032,6 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         return;
     }
     printf("Created shader\n");
-
 
     /*{   ///
         static Vertex vertices[] = {
@@ -1107,55 +1087,8 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         currentImportAnimation++;
     }
 
-    g_data.animController.numStates = numAnims;
-    g_data.animController.currentStateIdx = 0;
-
-    // create states
-    for (int i = 0; i < numAnims; ++i) {
-        g_data.animController.states[i].animationTime = 0.0f;
-        g_data.animController.states[i].animClip = &g_data.testAnim[i];
-    }
-    // create transitions
-    {   // idle -> walk
-        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
-        
-        transition.sourceStateIdx = 0;
-        transition.targetStateIdx = 1;
-
-        transition.duration = 0.5f;
-        transition.sourceOverlap = 0.5f;
-        transition.targetOverlap = 0.5f;
-    }
-    {   // walk -> walk (loop)
-        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
-
-        transition.sourceStateIdx = 1;
-        transition.targetStateIdx = 1;
-
-        transition.duration = 0.0f;
-        transition.sourceOverlap = 0.0f;
-        transition.targetOverlap = 0.0f;
-    }
-    {   // walk -> run 
-        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
-
-        transition.sourceStateIdx = 1;
-        transition.targetStateIdx = 2;
-
-        transition.duration = (g_data.testAnim[1].duration + g_data.testAnim[2].duration) * 0.5f;
-        transition.sourceOverlap = g_data.testAnim[1].duration * 0.5f;
-        transition.targetOverlap = g_data.testAnim[2].duration * 0.5f;
-    }
-    {   // run -> run (loop)
-        auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
-
-        transition.sourceStateIdx = 2;
-        transition.targetStateIdx = 2;
-
-        transition.duration = 0.0f;
-        transition.sourceOverlap = 0.0f;
-        transition.targetOverlap = 0.0f;
-    }
+    // initialize animation stack
+    g_data.animStack.referenceSkeleton = &g_data.testSkeleton;
 
     {   ///
         {   // frame constant data
@@ -1257,94 +1190,63 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     auto speed = (1.0f) * ImGui::GetIO().DeltaTime;
     static bool didSwitchAnimation = false;
 
-    auto FindTransitionCandidate = [](AnimationStateMachine* controller, float sourceTimeDiff) -> int
-    {
-        for (uint32_t i = 0; i < controller->numTransitions; ++i) {
-            auto& transition = controller->transitions[i];
-            if (transition.sourceStateIdx == controller->currentStateIdx && transition.sourceOverlap >= sourceTimeDiff) { return i; }
-            
-        }
-        return -1;
-    };
+    static const int nonLocomotionLayer = 1;
+    static const int locomotionLayer = 2;
+    static const int idleLayer = 3;
+    static const int crouchLayer = 4;
+    static const int walkLayer = 5;
+    static const int runLayer = 6;
+    static const int finalLayer = 0;
 
-    auto& currentState = g_data.animController.states[g_data.animController.currentStateIdx];
-    if (currentState.animationTime < currentState.animClip->duration) {
-        currentState.animationTime += animate ? animSpeedMod * speed : 0.0f; 
+    static float idleAnimProgress = 0.0f;
+    static float walkAnimProgress = 0.0f;
+    static float crouching = 0.0f;  // accelerates from 0 - 1 when crouch key is pressed
+    static float moving = 0.0f;      // accelerates from 0 - 1 when movement speed is > 0
+    static float running = 0.0f;
+
+    ImGui::SliderFloat("Crouching", &crouching, 0.0f, 1.0f);
+    ImGui::SliderFloat("Moving", &moving, 0.0f, 1.0f);
+    ImGui::SliderFloat("Running", &running, 0.0f, 1.0f);
+
+
+    if (moving > 0.0f) {
+        walkAnimProgress += speed;
+        //idleAnimProgress = 0.0f;
+    }
+    else {
+        walkAnimProgress = 0.0f;
+    }
+    idleAnimProgress += speed;
+
+    float idleDur = math::Lerp(g_data.testAnim[0].duration, g_data.testAnim[1].duration, crouching);
+    float walkDur = math::Lerp(g_data.testAnim[2].duration, g_data.testAnim[3].duration, running);
+
+    if (idleAnimProgress > idleDur) { idleAnimProgress -= idleDur; }
+    if (walkAnimProgress > walkDur) { walkAnimProgress -= walkDur; }
+
+    {   // idle 
+        PlayClip(&g_data.animStack, &g_data.testAnim[0], idleLayer, idleAnimProgress);
+    }
+    {   // crouch 
+        PlayClip(&g_data.animStack, &g_data.testAnim[1], crouchLayer, idleAnimProgress);
+    }
+    {   // non locomotion pose layer
+        TwoWayBlend(&g_data.animStack, idleLayer, crouchLayer, nonLocomotionLayer, crouching);
+    }
+    {   // walk 
+        PlayClip(&g_data.animStack, &g_data.testAnim[2], walkLayer, walkAnimProgress);
+    }
+    {   // run
+        PlayClip(&g_data.animStack, &g_data.testAnim[3], runLayer, walkAnimProgress);
+    }
+    {   // locomotion pose layer
+        TwoWayBlend(&g_data.animStack, walkLayer, runLayer, locomotionLayer, running);
     }
 
-    auto timeDiff = currentState.animClip->duration - currentState.animationTime;
-    auto transitionCandidate = FindTransitionCandidate(&g_data.animController, timeDiff);
-    if (g_data.animController.currentTransitionIdx < 0 && transitionCandidate != -1) {
-        g_data.animController.currentTransitionIdx = transitionCandidate;
-        g_data.animController.transitions[g_data.animController.currentTransitionIdx].t = 0.0f;
-        g_data.animController.states[g_data.animController.transitions[g_data.animController.currentTransitionIdx].targetStateIdx].animationTime = 0.0f;
+    {   // final blend
+        TwoWayBlend(&g_data.animStack, nonLocomotionLayer, locomotionLayer, finalLayer, moving);
     }
-
-    if(g_data.animController.currentTransitionIdx >= 0) {
-        auto& transition = g_data.animController.transitions[g_data.animController.currentTransitionIdx];
-        transition.t += animate ? ImGui::GetIO().DeltaTime * animSpeedMod : 0.0f;
-
-        if (transition.t >= transition.duration) {
-            g_data.animController.currentTransitionIdx = -1;
-
-            g_data.animController.currentStateIdx = transition.targetStateIdx;
-            //g_data.animController.states[g_data.animController.currentStateIdx].animationTime = 0.0f;
-            didSwitchAnimation = true;
-        }
-        else {
-            if (transition.targetOverlap >= (transition.duration - transition.t)) {
-                auto targetIdx = transition.targetStateIdx;
-                auto& targetState = g_data.animController.states[targetIdx];
-                targetState.animationTime += animate ? animSpeedMod * speed : 0.0f;
-            }
-        }
-    }
-
-    {   // sketch code
-        
-        //int nonLocomotionLayer;
-        //int locomotionLayer;
-        //int idleLayer = 0;
-        //int crouchLayer = 0;
-
-        //static float idleAnimProgress = 0.0f;   
-        //static float walkAnimProgress = 0.0f;
-        //static float crouching = 0.0f;  // accelerates from 0 - 1 when crouch key is pressed
-        //static float moving = 0.0;      // accelerates from 0 - 1 when movement speed is > 0
-
-        //{   // idle 
-        //    idleLayer = BeginLayer();
-        //    PlayClip("idle", idleAnimProgress);
-        //    EndLayer();
-        //}
-        //{   // crouch 
-        //    crouchLayer = BeginLayer();
-        //    PlayClip("crouch", idleAnimProgress);
-        //    EndLayer();
-        //}
-        //{   // non locomotion pose layer
-        //    nonLocomotionLayer = BeginLayer();
-        //    TwoWayBlend(idleLayer, crouchLayer, crouching);
-        //    EndLayer();
-        //}
-        //{   // walk 
-        //    idleLayer = BeginLayer();
-        //    PlayClip("walk", walkAnimProgress);
-        //    EndLayer();
-        //}
-        //{   // run
-        //    crouchLayer = BeginLayer();
-        //    PlayClip("run", walkAnimProgress);
-        //    EndLayer();
-        //}
-
-        //{   // final blend
-        //    BeginOutputLayer();
-        //    TwoWayBlend(nonLocomotionLayer, locomotionLayer, moving);
-        //    EndOutputLayer();
-        //}
-    }
-
+    
 
     //ImGui::ShowTestWindow();
 
@@ -1354,7 +1256,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ResetLocalTransforms(&g_data.testSkeleton);
     animate = animate && !tPose;
     if (!tPose) {
-        ComputeLocalPoses(&g_data.testSkeleton, &g_data.animController);
+        ApplyLayerToSkeleton(&g_data.testSkeleton, &g_data.animStack.layers[finalLayer]);
     }
 
     static math::Vec3 rootPos;
@@ -1391,7 +1293,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ///
     //
     static int selectedJoint = -1;
-    auto& animClip = g_data.animController.states[g_data.animController.currentStateIdx].animClip;
+    /*auto& animClip = g_data.animController.states[g_data.animController.currentStateIdx].animClip;
     if (selectedJoint != -1) {
 
         ImGui::PlotLines("X Pos Curve", [](void* data, int idx) -> float {
@@ -1418,12 +1320,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             return static_cast<AnimationClip*>(data)->tracks[0].keyframes[idx].rotation.w;
         }, animClip, animClip->tracks[selectedJoint].numKeyframes, 0, nullptr, -1.0f, 1.0f);
         ImGui::Text("Parent: %i", g_data.testSkeleton.joints[selectedJoint].parent);
-    }
+    }*/
 
-    if (ImGui::Begin("Character Controller")) {
-        ImGui::SliderFloat("Speed", &g_data.characterController.speed, 0.0f, 3.0f);
-    } ImGui::End();
-
+    //
     if (ImGui::Begin("Skeleton")) {
         ImGui::Checkbox("T-Pose", &tPose);
         ImGui::Checkbox("Show Skeleton", &showSkeleton);
@@ -1431,18 +1330,18 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         ImGui::Checkbox("Animate", &animate);
         ImGui::SliderFloat("Playback Speed Modifier", &animSpeedMod, -1.0f, 1.0f);
 
-        if (ImGui::BeginCombo("Animation Clip", animClip->name)) {
-            for (uint32_t i = 0; i < numAnims; ++i) {
-                ImGui::PushID(i);
-                if (ImGui::Selectable(g_data.testAnim[i].name, i == g_data.animController.currentStateIdx)) {
-                    g_data.animController.currentStateIdx = i;
-                    g_data.animController.states[i].animationTime = 0.0f;
-                    didSwitchAnimation = true;
-                }
-                ImGui::PopID();
-            }
-            ImGui::EndCombo();
-        }
+        //if (ImGui::BeginCombo("Animation Clip", animClip->name)) {
+        //    for (uint32_t i = 0; i < numAnims; ++i) {
+        //        /*ImGui::PushID(i);
+        //        if (ImGui::Selectable(g_data.testAnim[i].name, i == g_data.animController.currentStateIdx)) {
+        //            g_data.animController.currentStateIdx = i;
+        //            g_data.animController.states[i].animationTime = 0.0f;
+        //            didSwitchAnimation = true;
+        //        }
+        //        ImGui::PopID();*/
+        //    }
+        //    ImGui::EndCombo();
+        //}
 
         static bool* isDisplayed = nullptr;
         if (isDisplayed == nullptr) {
@@ -1458,30 +1357,6 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         }
     } ImGui::End();
    
-    if (ImGui::Begin("Animation State Machine")) {
-
-        auto& controller = g_data.animController;
-
-        auto& currentState = controller.states[controller.currentStateIdx];
-
-        ImGui::Text("Current State (#%i)", controller.currentStateIdx);
-        ImGui::ProgressBar(currentState.animationTime / currentState.animClip->duration);
-        
-        if (controller.currentTransitionIdx >= 0) {
-            auto& transition = controller.transitions[controller.currentTransitionIdx];
-
-            ImGui::Text("Transition (#%i -> #%i)", transition.sourceStateIdx, transition.targetStateIdx);
-            ImGui::ProgressBar(transition.t / transition.duration);
-
-            auto& targetState = controller.states[transition.targetStateIdx];
-            ImGui::Text("Target State (#%i)", transition.targetStateIdx);
-            ImGui::ProgressBar(targetState.animationTime / targetState.animClip->duration);
-        }
-        else {
-            //ImGui::Text("Next Transition: #%i", nextTransition);
-        }
-
-    } ImGui::End();
 
     auto canvasFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));

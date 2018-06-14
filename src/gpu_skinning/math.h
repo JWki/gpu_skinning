@@ -475,6 +475,60 @@ namespace math
     }
 
 
+    //static Vec4 RotationFrom4x4FloatMatrixCM(float* mat)
+    //{   
+    //    // taken from 
+    //    // https://android.googlesource.com/platform/external/jmonkeyengine/+/master/engine/src/core/com/jme3/math/Quaternion.java
+    //    //
+    //    float m00 = Get4x4FloatMatrixValueCM(mat, 0, 0);
+    //    float m01 = Get4x4FloatMatrixValueCM(mat, 1, 0);
+    //    float m02 = Get4x4FloatMatrixValueCM(mat, 2, 0);
+    //    float m10 = Get4x4FloatMatrixValueCM(mat, 0, 1);
+    //    float m11 = Get4x4FloatMatrixValueCM(mat, 1, 1);
+    //    float m12 = Get4x4FloatMatrixValueCM(mat, 2, 1);
+    //    float m20 = Get4x4FloatMatrixValueCM(mat, 0, 2);
+    //    float m21 = Get4x4FloatMatrixValueCM(mat, 1, 2);
+    //    float m22 = Get4x4FloatMatrixValueCM(mat, 2, 2);
+    //    
+    //    float t = m00 + m11 + m22;
+
+    //    Vec4 res;
+
+    //    if (t >= 0) {
+    //        float s = Sqrt(t + 1.0f);
+    //        res.w = 0.5f * s;
+    //        s = 0.5f / 2;
+    //        res.x = (m21 - m12) * s;
+    //        res.y = (m02 - m20) * s;
+    //        res.z = (m10 - m01) * s;
+    //    }
+    //    else if ((m00 > m11) && (m00 > m22)) {
+    //        float s = Sqrt(1.0f + m00 - m11 - m22); // |s|>=1
+    //        res.x = s * 0.5f; // |res.x| >= .5
+    //        s = 0.5f / s;
+    //        res.y = (m10 + m01) * s;
+    //        res.z = (m02 + m20) * s;
+    //        res.w = (m21 - m12) * s;
+    //    }
+    //    else if (m11 > m22) {
+    //        float s = Sqrt(1.0f + m11 - m00 - m22); // |s|>=1
+    //        res.y = s * 0.5f; // |res.y| >= .5
+    //        s = 0.5f / s;
+    //        res.x = (m10 + m01) * s;
+    //        res.z = (m21 + m12) * s;
+    //        res.w = (m02 - m20) * s;
+    //    }
+    //    else {
+    //        float s = Sqrt(1.0f + m22 - m00 - m11); // |s|>=1
+    //        res.z = s * 0.5f; // |res.z| >= .5
+    //        s = 0.5f / s;
+    //        res.x = (m02 + m20) * s;
+    //        res.y = (m21 + m12) * s;
+    //        res.w = (m10 - m01) * s;
+    //    }
+    //    return Normalize(res);
+    //}
+
     /*void Make4x4FloatProjectionMatrixCMLH(float* mat, float fovInRadians, float aspect, float near, float far)
     {
     Make4x4FloatMatrixIdentity(mat);
