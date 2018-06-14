@@ -515,7 +515,6 @@ struct AnimationState
     float           animationTime = 0.0f;
 };
 
-using ConditionCallback = bool(*)(void*);
 struct AnimationStateTransition
 {
     int32_t sourceStateIdx  = -1;
@@ -525,9 +524,6 @@ struct AnimationStateTransition
 
     float   sourceOverlap   = 0.0f;
     float   targetOverlap   = 0.0f;
-
-    ConditionCallback       condition = nullptr;
-    void*                   userData = nullptr;
 };
 
 #define MAX_NUM_ANIM_STATES 64
@@ -1129,12 +1125,6 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         transition.duration = 0.5f;
         transition.sourceOverlap = 0.5f;
         transition.targetOverlap = 0.5f;
-
-        transition.userData = &g_data.characterController;
-        transition.condition = [](void* data) -> bool {
-            auto controller = static_cast<CharacterController*>(data);
-            return controller->speed > 0.0f && controller->speed < 2.0f;
-        };
     }
     {   // walk -> walk (loop)
         auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
@@ -1145,12 +1135,6 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         transition.duration = 0.0f;
         transition.sourceOverlap = 0.0f;
         transition.targetOverlap = 0.0f;
-
-        transition.userData = &g_data.characterController;
-        transition.condition = [](void* data) -> bool {
-            auto controller = static_cast<CharacterController*>(data);
-            return controller->speed > 0.0f && controller->speed < 2.0f;
-        };
     }
     {   // walk -> run 
         auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
@@ -1161,12 +1145,6 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         transition.duration = (g_data.testAnim[1].duration + g_data.testAnim[2].duration) * 0.5f;
         transition.sourceOverlap = g_data.testAnim[1].duration * 0.5f;
         transition.targetOverlap = g_data.testAnim[2].duration * 0.5f;
-
-        transition.userData = &g_data.characterController;
-        transition.condition = [](void* data) -> bool {
-            auto controller = static_cast<CharacterController*>(data);
-            return controller->speed > 2.0f;
-        };
     }
     {   // run -> run (loop)
         auto& transition = g_data.animController.transitions[g_data.animController.numTransitions++];
@@ -1177,17 +1155,8 @@ void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext
         transition.duration = 0.0f;
         transition.sourceOverlap = 0.0f;
         transition.targetOverlap = 0.0f;
-
-        transition.userData = &g_data.characterController;
-        transition.condition = [](void* data) -> bool {
-            auto controller = static_cast<CharacterController*>(data);
-            return controller->speed > 2.0f;
-        };
     }
-    {   // 
 
-    }
-        
     {   ///
         {   // frame constant data
             D3D11_BUFFER_DESC desc;
@@ -1292,8 +1261,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     {
         for (uint32_t i = 0; i < controller->numTransitions; ++i) {
             auto& transition = controller->transitions[i];
-            if (transition.condition != nullptr && transition.sourceStateIdx == controller->currentStateIdx && transition.condition(transition.userData)) { return i; }
-            if (transition.condition == nullptr && transition.sourceStateIdx == controller->currentStateIdx && transition.sourceOverlap >= sourceTimeDiff) { return i; }
+            if (transition.sourceStateIdx == controller->currentStateIdx && transition.sourceOverlap >= sourceTimeDiff) { return i; }
             
         }
         return -1;
@@ -1332,6 +1300,52 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         }
     }
 
+    {   // sketch code
+        
+        //int nonLocomotionLayer;
+        //int locomotionLayer;
+        //int idleLayer = 0;
+        //int crouchLayer = 0;
+
+        //static float idleAnimProgress = 0.0f;   
+        //static float walkAnimProgress = 0.0f;
+        //static float crouching = 0.0f;  // accelerates from 0 - 1 when crouch key is pressed
+        //static float moving = 0.0;      // accelerates from 0 - 1 when movement speed is > 0
+
+        //{   // idle 
+        //    idleLayer = BeginLayer();
+        //    PlayClip("idle", idleAnimProgress);
+        //    EndLayer();
+        //}
+        //{   // crouch 
+        //    crouchLayer = BeginLayer();
+        //    PlayClip("crouch", idleAnimProgress);
+        //    EndLayer();
+        //}
+        //{   // non locomotion pose layer
+        //    nonLocomotionLayer = BeginLayer();
+        //    TwoWayBlend(idleLayer, crouchLayer, crouching);
+        //    EndLayer();
+        //}
+        //{   // walk 
+        //    idleLayer = BeginLayer();
+        //    PlayClip("walk", walkAnimProgress);
+        //    EndLayer();
+        //}
+        //{   // run
+        //    crouchLayer = BeginLayer();
+        //    PlayClip("run", walkAnimProgress);
+        //    EndLayer();
+        //}
+
+        //{   // final blend
+        //    BeginOutputLayer();
+        //    TwoWayBlend(nonLocomotionLayer, locomotionLayer, moving);
+        //    EndOutputLayer();
+        //}
+    }
+
+
     //ImGui::ShowTestWindow();
 
     static bool tPose = false;
@@ -1356,9 +1370,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
             objectPosition += dist;
             lastPosition = objectPosition;
-            math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
+            //math::Make4x4FloatTranslationMatrixCM(g_data.objectData.transform, objectPosition);
 
-            math::SetTranslation4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, math::Vec3());
+            //math::SetTranslation4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, math::Vec3());
         }
         math::Copy4x4FloatMatrixCM(g_data.testSkeleton.joints[0].localTransform, g_data.testSkeleton.joints[0].globalTransform);
     }
