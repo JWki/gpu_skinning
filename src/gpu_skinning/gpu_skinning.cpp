@@ -1187,7 +1187,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     ///
     static float animSpeedMod = 1.0f;
     static bool animate = true;
-    auto speed = (1.0f) * ImGui::GetIO().DeltaTime;
+    auto speed = (1.0f) * ImGui::GetIO().DeltaTime * animSpeedMod;
     static bool didSwitchAnimation = false;
 
     static const int nonLocomotionLayer = 1;
@@ -1358,8 +1358,9 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
     } ImGui::End();
    
 
+    auto mainViewport = ImGui::GetMainViewport();
     auto canvasFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings;
-    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowPos(mainViewport->Pos);
     ImGui::SetNextWindowSize(ImVec2(width, height));
     if (ImGui::Begin("#canvas", nullptr, ImVec2(), 0.0f, canvasFlags)) {
 
@@ -1371,20 +1372,19 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
         }
         
 
-
-        auto WorldToScreen = [&](const math::Vec3& pos) -> math::Vec3 {
+        auto WorldToScreen = [&](const math::Vec3& pos, ImVec2 mainViewportPos) -> math::Vec3 {
             auto clipPos = math::TransformPositionCM(math::Vec4(pos, 1.0f), g_data.frameData.cameraProjection);
             clipPos.xyz /= clipPos.w;
             auto uv = (clipPos.xyz * 0.5f + 0.5f);
             uv.y = 1.0f - uv.y;
-            return uv * math::Vec3(width, height, 1.0f);
+            return math::Vec3(uv * math::Vec3(width, height, 1.0f)) + math::Vec3(mainViewportPos.x, mainViewportPos.y, 0.0f);
         };
         auto drawList = ImGui::GetWindowDrawList();
 
-        auto u = WorldToScreen(math::Vec3(1.0f, 0.0f, 0.0f));
-        auto v = WorldToScreen(math::Vec3(0.0f, 1.0f, 0.0f));
-        auto w = WorldToScreen(math::Vec3(0.0f, 0.0f, 1.0f));
-        auto o = WorldToScreen(math::Vec3());
+        auto u = WorldToScreen(math::Vec3(1.0f, 0.0f, 0.0f), mainViewport->Pos);
+        auto v = WorldToScreen(math::Vec3(0.0f, 1.0f, 0.0f), mainViewport->Pos);
+        auto w = WorldToScreen(math::Vec3(0.0f, 0.0f, 1.0f), mainViewport->Pos);
+        auto o = WorldToScreen(math::Vec3(), mainViewport->Pos);
         
         drawList->AddLine(ImVec2(o.x, o.y), ImVec2(u.x, u.y), ImColor(1.0f, 0.0f, 0.0f), 4.0f);
         drawList->AddLine(ImVec2(o.x, o.y), ImVec2(v.x, v.y), ImColor(0.0f, 0.0f, 1.0f), 4.0f);
@@ -1394,7 +1394,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
 
             auto boneHead = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[i].globalTransform, 3).xyz;
             boneHead = math::TransformPositionCM(boneHead, g_data.objectData.transform);
-            auto screenPos = WorldToScreen(boneHead);
+            auto screenPos = WorldToScreen(boneHead, mainViewport->Pos);
 
             auto boneU = math::TransformPositionCM(math::Vec3(1.0f, 0.0f, 0.0f) * 0.1f, g_data.testSkeleton.joints[i].globalTransform);
             auto boneV = math::TransformPositionCM(math::Vec3(0.0f, 1.0f, 0.0f) * 0.1f, g_data.testSkeleton.joints[i].globalTransform);
@@ -1404,12 +1404,12 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             boneV = math::TransformPositionCM(boneV, g_data.objectData.transform);
             boneW = math::TransformPositionCM(boneW, g_data.objectData.transform);
 
-            auto rootScreenPos = WorldToScreen(rootPos);
+            auto rootScreenPos = WorldToScreen(rootPos, mainViewport->Pos);
             drawList->AddCircleFilled(ImVec2(rootScreenPos.x, rootScreenPos.y), 5.0f, ImColor(1.0f, 0.0f, 1.0f));
 
-            auto boneUPos = WorldToScreen(boneU);
-            auto boneVPos = WorldToScreen(boneV);
-            auto boneWPos = WorldToScreen(boneW);
+            auto boneUPos = WorldToScreen(boneU, mainViewport->Pos);
+            auto boneVPos = WorldToScreen(boneV, mainViewport->Pos);
+            auto boneWPos = WorldToScreen(boneW, mainViewport->Pos);
 
             ImVec2 labelPos(screenPos.x, screenPos.y);
 
@@ -1429,7 +1429,7 @@ void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceConte
             if (parent != -1) {
                 auto parentPos = math::Get4x4FloatMatrixColumnCM(g_data.testSkeleton.joints[parent].globalTransform, 3).xyz;
                 parentPos = math::TransformPositionCM(parentPos, g_data.objectData.transform);
-                auto parentScreenPos = WorldToScreen(parentPos);
+                auto parentScreenPos = WorldToScreen(parentPos, mainViewport->Pos);
 
                 drawList->AddLine(ImVec2(parentScreenPos.x, parentScreenPos.y), ImVec2(screenPos.x, screenPos.y), ImColor(0.0f, 0.0f, 1.0f));
             }

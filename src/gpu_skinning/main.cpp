@@ -1,7 +1,11 @@
 // ImGui - standalone example application for DirectX 11
 // If you are new to ImGui, see examples/README.txt and documentation at the top of imgui.cpp.
 
+
+
+
 #include "imgui/imgui.h"
+#include "imgui/imgui_impl_win32.h"
 #include "imgui/imgui_impl_dx11.h"
 #include <d3d11.h>
 #define DIRECTINPUT_VERSION 0x0800
@@ -9,13 +13,24 @@
 #include <tchar.h>
 #include <stdio.h>
 #include <stdint.h>
+
+#pragma comment(lib, "d3d11.lib")
+#pragma comment(lib, "d3dcompiler.lib")
+
+//
+extern void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext);
+extern void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext);
+extern void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext);
+extern void AppShutdown();
+
 // Data
 static ID3D11Device*            g_pd3dDevice = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
 static IDXGISwapChain*          g_pSwapChain = NULL;
 static ID3D11RenderTargetView*  g_mainRenderTargetView = NULL;
-static ID3D11DepthStencilView*  g_depthStencilView;
-static ID3D11Texture2D*         g_depthBuffer;
+static ID3D11DepthStencilView*  g_depthStencilView = nullptr;
+static ID3D11Texture2D*         g_depthBuffer = nullptr;
+ID3D11DepthStencilState*        g_pDSState = nullptr;
 
 void CreateRenderTarget(uint32_t width, uint32_t height)
 {
@@ -28,7 +43,7 @@ void CreateRenderTarget(uint32_t width, uint32_t height)
     if (g_depthBuffer) { g_depthBuffer->Release(); }
 
     {   // create depth buffer and dsv
-      
+
         D3D11_TEXTURE2D_DESC descDepth;
         ZeroMemory(&descDepth, sizeof(descDepth));
         descDepth.Width = width;
@@ -64,6 +79,7 @@ void CreateRenderTarget(uint32_t width, uint32_t height)
         }
     }
 
+
     {   // create depth stencil state
         D3D11_DEPTH_STENCIL_DESC dsDesc;
 
@@ -90,9 +106,8 @@ void CreateRenderTarget(uint32_t width, uint32_t height)
         dsDesc.BackFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
 
         // Create depth stencil state
-        ID3D11DepthStencilState * pDSState;
-        g_pd3dDevice->CreateDepthStencilState(&dsDesc, &pDSState);
-        g_pd3dDeviceContext->OMSetDepthStencilState(pDSState, 1);
+        g_pd3dDevice->CreateDepthStencilState(&dsDesc, &g_pDSState);
+        g_pd3dDeviceContext->OMSetDepthStencilState(g_pDSState, 1);
 
     }
 }
@@ -143,6 +158,10 @@ void CleanupDeviceD3D()
     if (g_pd3dDevice) { g_pd3dDevice->Release(); g_pd3dDevice = NULL; }
 }
 
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0 // From Windows SDK 8.1+ headers
+#endif
+
 extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -168,28 +187,27 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
+    case WM_DPICHANGED:
+        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_DpiEnableScaleViewports)
+        {
+            //const int dpi = HIWORD(wParam);
+            //printf("WM_DPICHANGED to %d (%.0f%%)\n", dpi, (float)dpi / 96.0f * 100.0f);
+            const RECT* suggested_rect = (RECT*)lParam;
+            ::SetWindowPos(hWnd, NULL, suggested_rect->left, suggested_rect->top, suggested_rect->right - suggested_rect->left, suggested_rect->bottom - suggested_rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        break;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-extern void AppInit(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext);
-extern void AppUpdate(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext);
-extern void AppRender(HWND hWnd, ID3D11Device* device, ID3D11DeviceContext* deviceContext);
-extern void AppShutdown();
-
-
 int main(int, char**)
 {
+    ImGui_ImplWin32_EnableDpiAwareness();
+
     // Create application window
     WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(NULL), NULL, NULL, NULL, NULL, _T("ImGui Example"), NULL };
     RegisterClassEx(&wc);
-    RECT dimensions;
-    dimensions.left = 0;
-    dimensions.right = 1920;
-    dimensions.bottom = 1080;
-    dimensions.top = 0;
-    AdjustWindowRect(&dimensions, WS_OVERLAPPEDWINDOW, FALSE);
-    HWND hwnd = CreateWindow(_T("ImGui Example"), _T("ImGui DirectX11 Example"), WS_OVERLAPPEDWINDOW, dimensions.left, dimensions.top, dimensions.right - dimensions.left, dimensions.bottom - dimensions.top, NULL, NULL, wc.hInstance, NULL);
+    HWND hwnd = CreateWindow(_T("ImGui Example"), _T("ImGui DirectX11 Example"), WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, NULL, NULL, wc.hInstance, NULL);
 
     // Initialize Direct3D
     if (CreateDeviceD3D(hwnd) < 0)
@@ -203,42 +221,37 @@ int main(int, char**)
     ShowWindow(hwnd, SW_SHOWDEFAULT);
     UpdateWindow(hwnd);
 
-    // Setup ImGui binding
+    // Setup Dear ImGui binding
+    IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
-    //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
-    ImGui_ImplDX11_Init(hwnd, g_pd3dDevice, g_pd3dDeviceContext);
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    //io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoTaskBarIcons;
+    //io.ConfigFlags |= ImGuiConfigFlags_ViewportsNoMerge;
+    io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleFonts;
+    io.ConfigFlags |= ImGuiConfigFlags_DpiEnableScaleViewports;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
+
+    ImGui_ImplWin32_Init(hwnd);
+    ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
 
     // Setup style
+    ImGui::GetStyle().WindowRounding = 0.0f;
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsClassic();
 
-    // Load Fonts
-    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them. 
-    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple. 
-    // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-    // - Read 'misc/fonts/README.txt' for more instructions and details.
-    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    //io.Fonts->AddFontDefault();
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
-    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-    //IM_ASSERT(font != NULL);
-
-    bool show_demo_window = true;
-    bool show_another_window = false;
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     AppInit(hwnd, g_pd3dDevice, g_pd3dDeviceContext);
+
+    //
+    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
     MSG msg;
     ZeroMemory(&msg, sizeof(msg));
     while (msg.message != WM_QUIT)
     {
+        // Poll and handle messages (inputs, window resize, etc.)
         // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
         // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
@@ -249,20 +262,34 @@ int main(int, char**)
             DispatchMessage(&msg);
             continue;
         }
-        ImGui_ImplDX11_NewFrame();
-        ///
 
+        // Start the ImGui frame
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+
+        //
         AppUpdate(hwnd, g_pd3dDevice, g_pd3dDeviceContext);
 
         // Rendering
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, g_depthStencilView);
         g_pd3dDeviceContext->ClearRenderTargetView(g_mainRenderTargetView, (float*)&clear_color);
         g_pd3dDeviceContext->ClearDepthStencilView(g_depthStencilView, D3D11_CLEAR_DEPTH, 1.0f, 0);
+        //
+        g_pd3dDeviceContext->OMSetDepthStencilState(g_pDSState, 1);
 
         AppRender(hwnd, g_pd3dDevice, g_pd3dDeviceContext);
-        
+
+        //
         ImGui::Render();
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+        // Update and Render additional Platform Windows
+        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+        {
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+        }
 
         g_pSwapChain->Present(1, 0); // Present with vsync
         //g_pSwapChain->Present(0, 0); // Present without vsync
@@ -271,6 +298,7 @@ int main(int, char**)
     AppShutdown();
 
     ImGui_ImplDX11_Shutdown();
+    ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 
     CleanupDeviceD3D();
